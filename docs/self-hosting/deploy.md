@@ -4,7 +4,7 @@ This guide deploys one standalone Flared installation: one owner, one workspace,
 
 ## Before you start
 
-- A Cloudflare account on **Workers Paid** (US$5 a month).
+- A Cloudflare account. Workers Free works; see [Workers Free or Workers Paid](#workers-free-or-workers-paid).
 - A GitHub or GitLab account. Deploy on Cloudflare copies this repository into it.
 - Two random secrets. Generate them at [flared.page/secrets](https://flared.page/secrets), which makes them in your browser, or run `openssl rand -base64 48` once for each. Keep them different.
 
@@ -13,7 +13,7 @@ This guide deploys one standalone Flared installation: one owner, one workspace,
 1. Open [Deploy on Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/FlaredLink/Flared).
 2. Keep the Worker name `flared`, or note the name you choose.
 3. Enter the secrets:
-   - `APP_ORIGIN`: `https://flared.<your-account-subdomain>.workers.dev`. Use your Worker name if you changed it. Use `https://` and no path. You can also leave it empty and set it after the first deploy.
+   - `APP_ORIGIN`: `https://flared.YOUR-SUBDOMAIN.workers.dev`, where `YOUR-SUBDOMAIN` is the workers.dev subdomain of your Cloudflare account. Use your Worker name if you changed it. Use `https://` and no path. You can also leave it empty and set it after the first deploy.
    - `AUTH_SECRET`: the first random secret.
    - `SETUP_SECRET`: the second random secret.
 4. Start the deploy. Cloudflare creates the three D1 databases and the two Queues, applies the migrations, and deploys the Worker.
@@ -27,6 +27,8 @@ If you left `APP_ORIGIN` empty, open the Worker's address. The page tells you th
 3. The wizard confirms the address, creates your first link, and waits until a click on it counts.
 4. Delete the `SETUP_SECRET` secret from the Worker. Setup never opens again, with or without it.
 
+If you lost `SETUP_SECRET` before setup, set a new value: **Workers & Pages → flared → Settings → Variables and Secrets**, edit `SETUP_SECRET`, save and deploy, then enter the new value at `/setup`. Cloudflare never shows a secret again after you save it.
+
 Without email, only the Cloudflare account can reset a forgotten password. See [recovery.md](recovery.md).
 
 ## What runs
@@ -35,4 +37,14 @@ Without email, only the Cloudflare account can reset a forgotten password. See [
 - The Queue `flared-clicks` carries clicks to the analytics database. Clicks that fail five times go to `flared-clicks-dlq`.
 - A cron every 10 minutes and a daily cron run maintenance. `https://<your app address>/healthz` answers 200 while the 10-minute cron runs; point an uptime monitor at it.
 
-Next: [move the app to your own address](origin.md), [change the limits](limits.md), [upgrade](upgrade.md), and [back up](backups.md).
+## Workers Free or Workers Paid
+
+Flared runs on Workers Free. Workers Paid (US$5 a month) gives more room. On Free:
+
+- The Worker answers 100,000 requests a day, app and short links together.
+- D1 allows 5 million rows read and 100,000 rows written a day, and each database holds up to 500 MB. When the account reaches a daily D1 limit, Flared cannot read or write its databases until 00:00 UTC, so links and sign-in stop until then.
+- Queues allow 10,000 operations a day. Each recorded click uses about three.
+- Time Travel keeps 7 days of history; Workers Paid keeps 30. See [backups.md](backups.md).
+- Cloudflare documents a limit of 10 ms of CPU time per request. The password hash is deliberate CPU work: a sign-in takes about 30 ms and setup about 160 ms. On 2026-10-08 both finished on a Free account. If Cloudflare stops such a request, it fails with error 1102, "Worker exceeded resource limits". Then move the account to Workers Paid; nothing else changes.
+
+Next: [move the app to your own address](origin.md), [use your own domains for links](domains.md), [change the limits](limits.md), [upgrade](upgrade.md), and [back up](backups.md).

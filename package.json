@@ -3,15 +3,17 @@
 	"private": true,
 	"license": "AGPL-3.0-only",
 	"type": "module",
+	"version": "0.1.0",
 	"packageManager": "bun@1.3.14",
 	"scripts": {
 		"build": "bun run --cwd apps/standalone build",
 		"deploy": "wrangler d1 migrations apply IDENTITY --remote && wrangler d1 migrations apply ROUTING --remote && wrangler d1 migrations apply ANALYTICS_1 --remote && wrangler deploy",
 		"dev": "bun run build && wrangler d1 migrations apply IDENTITY --local && wrangler d1 migrations apply ROUTING --local && wrangler d1 migrations apply ANALYTICS_1 --local && wrangler dev",
+		"release": "bun scripts/release.ts",
 		"owner:reset-password": "bun apps/standalone/scripts/owner-reset-password.ts",
 		"test:auth-probe": "vitest run --config tests/vitest.config.ts tests/auth-proof-probe.test.ts",
 		"check": "tsc --noEmit && svelte-check --workspace packages/ui --tsconfig ./tsconfig.json --fail-on-warnings && bun run --cwd apps/standalone check",
-		"format:check": "prettier --check package.json tsconfig.json .prettierrc.json wrangler.jsonc packages apps tests",
+		"format:check": "prettier --check package.json tsconfig.json .prettierrc.json wrangler.jsonc packages apps tests scripts",
 		"test": "vitest run --config tests/vitest.config.ts",
 		"test:cli": "vitest run --config packages/cli/vitest.config.ts",
 		"build:cli": "bun run --cwd packages/cli build && bun run --cwd packages/cli smoke",
@@ -45,7 +47,7 @@
 	"cloudflare": {
 		"bindings": {
 			"APP_ORIGIN": {
-				"description": "The app address with https:// and no path, such as https://flared.<your-account-subdomain>.workers.dev. You can set it after the first deploy."
+				"description": "The app address with no path or trailing slash: https://flared.YOUR-SUBDOMAIN.workers.dev, where YOUR-SUBDOMAIN is the workers.dev subdomain of your Cloudflare account. Use the Worker name in place of flared if you change it. Not sure? Leave it empty: after the deploy, the Worker address shows the exact value to set."
 			},
 			"AUTH_SECRET": {
 				"description": "A random value of 32 to 256 characters that signs sessions. Generate one at https://flared.page/secrets or with: openssl rand -base64 48"
