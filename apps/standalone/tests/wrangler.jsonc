@@ -1,0 +1,37 @@
+{
+	"name": "flared-standalone-tests",
+	"compatibility_date": "2026-08-22",
+	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "IDENTITY",
+			"database_name": "identity",
+			"database_id": "00000000-0000-0000-0000-000000000101"
+		},
+		{
+			"binding": "ROUTING",
+			"database_name": "routing",
+			"database_id": "00000000-0000-0000-0000-000000000102"
+		},
+		{
+			"binding": "ANALYTICS_1",
+			"database_name": "analytics",
+			"database_id": "00000000-0000-0000-0000-000000000103"
+		},
+		{
+			"binding": "RECOVERY_IDENTITY",
+			"database_name": "recovery-identity",
+			"database_id": "00000000-0000-0000-0000-000000000104"
+		},
+		{
+			"binding": "RECOVERY_ROUTING",
+			"database_name": "recovery-routing",
+			"database_id": "00000000-0000-0000-0000-000000000105"
+		},
+		{
+			"binding": "RECOVERY_ANALYTICS",
+			"database_name": "recovery-analytics",
+			"database_id": "00000000-0000-0000-0000-000000000106"
+		}
+	]
+}

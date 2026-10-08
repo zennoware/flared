@@ -1,0 +1,70 @@
+{
+	"name": "flared",
+	"private": true,
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"packageManager": "bun@1.3.14",
+	"scripts": {
+		"build": "bun run --cwd apps/standalone build",
+		"deploy": "wrangler d1 migrations apply IDENTITY --remote && wrangler d1 migrations apply ROUTING --remote && wrangler d1 migrations apply ANALYTICS_1 --remote && wrangler deploy",
+		"dev": "bun run build && wrangler d1 migrations apply IDENTITY --local && wrangler d1 migrations apply ROUTING --local && wrangler d1 migrations apply ANALYTICS_1 --local && wrangler dev",
+		"owner:reset-password": "bun apps/standalone/scripts/owner-reset-password.ts",
+		"test:auth-probe": "vitest run --config tests/vitest.config.ts tests/auth-proof-probe.test.ts",
+		"check": "tsc --noEmit && svelte-check --workspace packages/ui --tsconfig ./tsconfig.json --fail-on-warnings && bun run --cwd apps/standalone check",
+		"format:check": "prettier --check package.json tsconfig.json .prettierrc.json wrangler.jsonc packages apps tests",
+		"test": "vitest run --config tests/vitest.config.ts",
+		"test:cli": "vitest run --config packages/cli/vitest.config.ts",
+		"build:cli": "bun run --cwd packages/cli build && bun run --cwd packages/cli smoke",
+		"test:standalone": "bun run --cwd apps/standalone test",
+		"build:dry-run": "bun run build && wrangler deploy --dry-run"
+	},
+	"dependencies": {
+		"better-auth": "1.7.7",
+		"@better-auth/drizzle-adapter": "1.7.7",
+		"drizzle-orm": "0.45.3"
+	},
+	"devDependencies": {
+		"@cfworker/json-schema": "4.1.1",
+		"@cloudflare/vitest-pool-workers": "0.22.0",
+		"@cloudflare/workers-types": "5.20260930.2",
+		"@types/node": "24.10.1",
+		"@vitest/runner": "4.1.11",
+		"@vitest/snapshot": "4.1.11",
+		"prettier": "3.9.9",
+		"prettier-plugin-svelte": "4.1.1",
+		"svelte": "5.57.1",
+		"svelte-check": "4.7.6",
+		"typescript": "6.0.3",
+		"vitest": "4.1.11",
+		"wrangler": "4.143.1"
+	},
+	"workspaces": [
+		"packages/*",
+		"apps/*"
+	],
+	"cloudflare": {
+		"bindings": {
+			"APP_ORIGIN": {
+				"description": "The app address with https:// and no path, such as https://flared.<your-account-subdomain>.workers.dev. You can set it after the first deploy."
+			},
+			"AUTH_SECRET": {
+				"description": "A random value of 32 to 256 characters that signs sessions. Generate one at https://flared.page/secrets or with: openssl rand -base64 48"
+			},
+			"SETUP_SECRET": {
+				"description": "A different random value of at least 32 bytes, from the same page. You type it once at /setup to create the owner; delete it afterwards."
+			},
+			"IDENTITY": {
+				"description": "Accounts, sessions, the workspace, and its limits."
+			},
+			"ROUTING": {
+				"description": "Short links, domains, and reserved slugs."
+			},
+			"ANALYTICS_1": {
+				"description": "Click counts."
+			},
+			"CLICKS": {
+				"description": "Click events from redirects to the analytics database."
+			}
+		}
+	}
+}

@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.superpowers/
+coverage/
+.dev.vars
+.env
+packages/cli/dist/
+packages/cli/LICENSE.md
+.svelte-kit/

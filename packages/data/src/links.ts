@@ -1,0 +1,490 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Routing-store records for domains, permanent slug reservations, links, and create keys.
+import type { D1Database } from '@cloudflare/workers-types/index.ts';
+import { isBlockReason, type BlockReason } from '@flared/contracts/links';
+
+export interface DomainRow {
+	id: string;
+	hostname: string;
+}
+
+export interface LinkRow {
+	id: string;
+	domainId: string;
+	hostname: string;
+	slug: string;
+	destination: string;
+	title: string | null;
+	active: boolean;
+	blockedReason: BlockReason | null;
+	createdAt: number;
+	updatedAt: number;
+}
+
+// created: link stored. slug_taken / limit_reached: terminal result stored under the key.
+// retry: a generated slug collided; nothing stored. unavailable: domain or policy missing;
+// nothing stored. duplicate_key: the key already has a record; read it.
+export type CreateOutcome =
+	'created' | 'slug_taken' | 'limit_reached' | 'retry' | 'unavailable' | 'duplicate_key';
+
+export interface NewLinkRecord {
+	tenantId: string;
+	key: string;
+	requestHash: string;
+	linkId: string;
+	domainId: string;
+	slug: string;
+	// A generated slug that collides is retried with a new slug instead of being stored.
+	generatedSlug: boolean;
+	destination: string;
+	title: string | null;
+	now: number;
+	expiresAt: number;
+	bodies: { created: string; slugTaken: string; limitReached: string };
+}
+
+export interface StoredResult {
+	requestHash: string;
+	status: number;
+	body: string;
+}
+
+export interface LinkChange {
+	destination?: string;
+	title?: string | null;
+	active?: boolean;
+	now: number;
+}
+
+const linkColumns =
+	'l.id, l.domain_id, n.hostname, l.slug, l.destination, l.title, l.status, l.blocked_reason, l.created_at, l.updated_at';
+
+function text(value: unknown, field: string): string {
+	if (typeof value !== 'string' || !value) throw new Error(`Invalid stored ${field}`);
+	return value;
+}
+
+function time(value: unknown, field: string): number {
+	if (typeof value !== 'number' || !Number.isSafeInteger(value))
+		throw new Error(`Invalid stored ${field}`);
+	return value;
+}
+
+function toLink(row: Record<string, unknown>): LinkRow {
+	if (row.status !== 'active' && row.status !== 'disabled') throw new Error('Invalid link status');
+	if (row.title !== null && typeof row.title !== 'string') throw new Error('Invalid link title');
+	if (row.blocked_reason !== null && !isBlockReason(row.blocked_reason))
+		throw new Error('Invalid block reason');
+	return {
+		id: text(row.id, 'link'),
+		domainId: text(row.domain_id, 'domain'),
+		hostname: text(row.hostname, 'hostname'),
+		slug: text(row.slug, 'slug'),
+		destination: text(row.destination, 'destination'),
+		title: row.title,
+		active: row.status === 'active',
+		blockedReason: row.blocked_reason,
+		createdAt: time(row.created_at, 'creation time'),
+		updatedAt: time(row.updated_at, 'update time')
+	};
+}
+
+// An explicit domain must be active and owned by the tenant or shared with every tenant.
+// Without one, only the installation default qualifies.
+export async function findUsableDomain(
+	db: D1Database,
+	tenantId: string,
+	domainId: string | null
+): Promise<DomainRow | null> {
+	const statement =
+		domainId === null
+			? db.prepare(
+					"SELECT d.id, n.hostname FROM domains d JOIN domain_namespaces n ON n.id = d.id WHERE d.is_default = 1 AND d.state = 'active' AND d.tenant_id IS NULL"
+				)
+			: db
+					.prepare(
+						"SELECT d.id, n.hostname FROM domains d JOIN domain_namespaces n ON n.id = d.id WHERE d.id = ? AND d.state = 'active' AND (d.tenant_id IS NULL OR d.tenant_id = ?)"
+					)
+					.bind(domainId, tenantId);
+	const row = await statement.first<Record<string, unknown>>();
+	return row ? { id: text(row.id, 'domain'), hostname: text(row.hostname, 'hostname') } : null;
+}
+
+// Counts the attempt in a fixed one-minute window and reports whether it fits the limit.
+export async function countCreationAttempt(
+	db: D1Database,
+	tenantId: string,
+	now: number,
+	limit: number
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+	const windowStart = now - (now % 60000);
+	const row = await db
+		.prepare(
+			'INSERT INTO creation_windows (tenant_id, window_start, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, window_start) DO UPDATE SET count = count + 1 RETURNING count'
+		)
+		.bind(tenantId, windowStart)
+		.first<{ count: unknown }>();
+	const count = typeof row?.count === 'number' ? row.count : Number.POSITIVE_INFINITY;
+	return {
+		allowed: count <= limit,
+		retryAfterSeconds: Math.max(1, Math.ceil((windowStart + 60000 - now) / 1000))
+	};
+}
+
+export async function readStoredResult(
+	db: D1Database,
+	tenantId: string,
+	key: string,
+	now: number
+): Promise<StoredResult | null> {
+	const row = await db
+		.prepare(
+			'SELECT request_hash, status, body FROM idempotency_records WHERE tenant_id = ? AND key = ? AND expires_at > ? AND status IS NOT NULL'
+		)
+		.bind(tenantId, key, now)
+		.first<Record<string, unknown>>();
+	if (!row) return null;
+	return {
+		requestHash: text(row.request_hash, 'request hash'),
+		status: time(row.status, 'status'),
+		body: text(row.body, 'body')
+	};
+}
+
+// One batch claims the key, decides the outcome with SQL conditions, and writes the
+// reservation, link, and stored response together. Expected rejections never raise an
+// error, so their stored result is not rolled back; the reservation key stays the final guard.
+export async function createLinkRecord(
+	db: D1Database,
+	record: NewLinkRecord
+): Promise<CreateOutcome> {
+	const { tenantId: t, key: k } = record;
+	const outcomeOf = 'SELECT outcome FROM idempotency_records WHERE tenant_id = ?1 AND key = ?2';
+	try {
+		const results = await db.batch([
+			db
+				.prepare(
+					'DELETE FROM idempotency_records WHERE tenant_id = ? AND key = ? AND expires_at <= ?'
+				)
+				.bind(t, k, record.now),
+			db
+				.prepare(
+					"INSERT INTO idempotency_records (tenant_id, key, request_hash, outcome, created_at, expires_at) VALUES (?, ?, ?, 'pending', ?, ?)"
+				)
+				.bind(t, k, record.requestHash, record.now, record.expiresAt),
+			db
+				.prepare(
+					`UPDATE idempotency_records SET outcome = CASE
+						WHEN NOT EXISTS (SELECT 1 FROM tenant_policy WHERE tenant_id = ?1) THEN 'unavailable'
+						WHEN NOT EXISTS (SELECT 1 FROM domains WHERE id = ?3 AND state = 'active' AND (tenant_id IS NULL OR tenant_id = ?1)) THEN 'unavailable'
+						WHEN (SELECT COUNT(*) FROM links WHERE tenant_id = ?1 AND status = 'active') >= (SELECT active_link_limit FROM tenant_policy WHERE tenant_id = ?1) THEN 'limit_reached'
+						WHEN EXISTS (SELECT 1 FROM slug_reservations WHERE domain_id = ?3 AND slug = ?4) THEN ?5
+						WHEN EXISTS (SELECT 1 FROM reserved_slugs WHERE slug = ?4) AND EXISTS (SELECT 1 FROM domains WHERE id = ?3 AND tenant_id IS NULL) THEN ?5
+						ELSE 'created' END
+					WHERE tenant_id = ?1 AND key = ?2`
+				)
+				.bind(t, k, record.domainId, record.slug, record.generatedSlug ? 'retry' : 'slug_taken'),
+			db
+				.prepare(
+					`INSERT INTO slug_reservations (domain_id, slug) SELECT ?3, ?4 WHERE (${outcomeOf}) = 'created'`
+				)
+				.bind(t, k, record.domainId, record.slug),
+			db
+				.prepare(
+					`INSERT INTO links (id, tenant_id, domain_id, slug, destination, title, status, created_at, updated_at)
+					SELECT ?3, ?1, ?4, ?5, ?6, ?7, 'active', ?8, ?8 WHERE (${outcomeOf}) = 'created'`
+				)
+				.bind(
+					t,
+					k,
+					record.linkId,
+					record.domainId,
+					record.slug,
+					record.destination,
+					record.title,
+					record.now
+				),
+			db
+				.prepare(
+					`UPDATE idempotency_records SET
+						status = CASE outcome WHEN 'created' THEN 201 WHEN 'slug_taken' THEN 409 WHEN 'limit_reached' THEN 403 END,
+						body = CASE outcome WHEN 'created' THEN ?3 WHEN 'slug_taken' THEN ?4 WHEN 'limit_reached' THEN ?5 END
+					WHERE tenant_id = ?1 AND key = ?2`
+				)
+				.bind(t, k, record.bodies.created, record.bodies.slugTaken, record.bodies.limitReached),
+			db.prepare(outcomeOf).bind(t, k),
+			db
+				.prepare(
+					"DELETE FROM idempotency_records WHERE tenant_id = ? AND key = ? AND outcome IN ('retry', 'unavailable')"
+				)
+				.bind(t, k)
+		]);
+		const outcome = (results[6].results[0] as { outcome?: unknown } | undefined)?.outcome;
+		if (
+			outcome !== 'created' &&
+			outcome !== 'slug_taken' &&
+			outcome !== 'limit_reached' &&
+			outcome !== 'retry' &&
+			outcome !== 'unavailable'
+		)
+			throw new Error('Link creation returned no outcome');
+		return outcome;
+	} catch (error) {
+		// The key's insert failed: an earlier or concurrent request already holds it.
+		if (await keyExists(db, t, k, record.now)) return 'duplicate_key';
+		throw error;
+	}
+}
+
+async function keyExists(db: D1Database, tenantId: string, key: string, now: number) {
+	const row = await db
+		.prepare(
+			'SELECT 1 AS found FROM idempotency_records WHERE tenant_id = ? AND key = ? AND expires_at > ?'
+		)
+		.bind(tenantId, key, now)
+		.first();
+	return row !== null;
+}
+
+export async function readLink(
+	db: D1Database,
+	tenantId: string,
+	linkId: string
+): Promise<LinkRow | null> {
+	const row = await db
+		.prepare(
+			`SELECT ${linkColumns} FROM links l JOIN domain_namespaces n ON n.id = l.domain_id WHERE l.tenant_id = ? AND l.id = ?`
+		)
+		.bind(tenantId, linkId)
+		.first<Record<string, unknown>>();
+	return row ? toLink(row) : null;
+}
+
+function escapeLike(value: string): string {
+	return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+// Newest first. The cursor is the last row's (created_at, id), so pages stay stable while
+// links are added.
+export async function listLinks(
+	db: D1Database,
+	tenantId: string,
+	options: { limit: number; after: { createdAt: number; id: string } | null; search: string | null }
+): Promise<LinkRow[]> {
+	const conditions = ['l.tenant_id = ?'];
+	const values: (string | number)[] = [tenantId];
+	if (options.after) {
+		conditions.push('(l.created_at < ? OR (l.created_at = ? AND l.id < ?))');
+		values.push(options.after.createdAt, options.after.createdAt, options.after.id);
+	}
+	if (options.search) {
+		const pattern = `%${escapeLike(options.search)}%`;
+		conditions.push("(l.slug LIKE ? ESCAPE '\\' OR l.title LIKE ? ESCAPE '\\')");
+		values.push(pattern, pattern);
+	}
+	const { results } = await db
+		.prepare(
+			`SELECT ${linkColumns} FROM links l JOIN domain_namespaces n ON n.id = l.domain_id WHERE ${conditions.join(' AND ')} ORDER BY l.created_at DESC, l.id DESC LIMIT ?`
+		)
+		.bind(...values, options.limit)
+		.all<Record<string, unknown>>();
+	return results.map(toLink);
+}
+
+// One statement, so reactivation and the active-link count cannot race. Returns false when
+// the link is missing, blocked, or reactivation would exceed the limit; the caller tells them
+// apart. The owner may still turn a blocked link off, which frees its place in the limit.
+export async function updateLink(
+	db: D1Database,
+	tenantId: string,
+	linkId: string,
+	change: LinkChange
+): Promise<boolean> {
+	const status = change.active === undefined ? null : change.active ? 'active' : 'disabled';
+	const result = await db
+		.prepare(
+			`UPDATE links SET
+				destination = COALESCE(?3, destination),
+				title = CASE WHEN ?4 = 1 THEN ?5 ELSE title END,
+				status = COALESCE(?6, status),
+				updated_at = ?7
+			WHERE tenant_id = ?1 AND id = ?2
+			AND (blocked_at IS NULL OR (?3 IS NULL AND ?4 = 0 AND ?6 = 'disabled'))
+			AND NOT (
+				status = 'disabled' AND ?6 = 'active' AND
+				(SELECT COUNT(*) FROM links WHERE tenant_id = ?1 AND status = 'active') >=
+				COALESCE((SELECT active_link_limit FROM tenant_policy WHERE tenant_id = ?1), 0)
+			)`
+		)
+		.bind(
+			tenantId,
+			linkId,
+			change.destination ?? null,
+			change.title === undefined ? 0 : 1,
+			change.title ?? null,
+			status,
+			change.now
+		)
+		.run();
+	return result.meta.changes === 1;
+}
+
+export async function deleteExpiredCreationRecords(
+	db: D1Database,
+	now: number,
+	limit: number
+): Promise<void> {
+	if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+		throw new Error('Invalid cleanup batch size');
+	await db.batch([
+		db
+			.prepare(
+				'DELETE FROM idempotency_records WHERE rowid IN (SELECT rowid FROM idempotency_records WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)'
+			)
+			.bind(now, limit),
+		db
+			.prepare(
+				'DELETE FROM creation_windows WHERE rowid IN (SELECT rowid FROM creation_windows WHERE window_start < ? ORDER BY window_start LIMIT ?)'
+			)
+			.bind(now - 3600000, limit)
+	]);
+}
+
+export interface RedirectTarget {
+	tenantId: string;
+	linkId: string;
+	analyticsShardId: string;
+	destination: string;
+}
+
+// blocked: the link would open, but the operator blocked it or suspended its tenant.
+export type RedirectLookup = { kind: 'target'; target: RedirectTarget } | { kind: 'blocked' };
+
+// Redirects read the primary so a committed edit, disable, or block is never hidden by replica
+// lag. A link resolves only on an active domain its tenant may use and while the tenant's
+// policy exists in routing.
+export async function findRedirectTarget(
+	db: D1Database,
+	hostname: string,
+	slug: string
+): Promise<RedirectLookup | null> {
+	const row = await db
+		.withSession('first-primary')
+		.prepare(
+			`SELECT l.tenant_id, l.id, p.analytics_shard_id, l.destination,
+				l.blocked_at IS NOT NULL OR p.suspended_at IS NOT NULL AS blocked
+			FROM domain_namespaces n
+			JOIN domains d ON d.id = n.id AND d.state = 'active'
+			JOIN links l ON l.domain_id = n.id AND l.slug = ? AND l.status = 'active'
+			JOIN tenant_policy p ON p.tenant_id = l.tenant_id
+			WHERE n.hostname = ? AND (d.tenant_id IS NULL OR d.tenant_id = l.tenant_id)`
+		)
+		.bind(slug, hostname)
+		.first<Record<string, unknown>>();
+	if (!row) return null;
+	if (row.blocked === 1) return { kind: 'blocked' };
+	return {
+		kind: 'target',
+		target: {
+			tenantId: text(row.tenant_id, 'tenant'),
+			linkId: text(row.id, 'link'),
+			analyticsShardId: text(row.analytics_shard_id, 'shard'),
+			destination: text(row.destination, 'destination')
+		}
+	};
+}
+
+export interface OperatorLink extends LinkRow {
+	tenantId: string;
+	blockedAt: number | null;
+}
+
+// For the operator only: a link by its short address, in any tenant.
+export async function findLinkByAddress(
+	db: D1Database,
+	hostname: string,
+	slug: string
+): Promise<OperatorLink | null> {
+	const row = await db
+		.prepare(
+			`SELECT ${linkColumns}, l.tenant_id, l.blocked_at FROM links l JOIN domain_namespaces n ON n.id = l.domain_id WHERE n.hostname = ? AND l.slug = ?`
+		)
+		.bind(hostname, slug)
+		.first<Record<string, unknown>>();
+	if (!row) return null;
+	return {
+		...toLink(row),
+		tenantId: text(row.tenant_id, 'tenant'),
+		blockedAt: row.blocked_at === null ? null : time(row.blocked_at, 'block time')
+	};
+}
+
+// For the operator only: sets or clears a block and returns the link's tenant, or null for no
+// link. Repeating it changes nothing: an existing block keeps its time and reason, and the
+// owner's status is never touched.
+export async function setLinkBlock(
+	db: D1Database,
+	linkId: string,
+	block: { reason: BlockReason; now: number } | null
+): Promise<{ tenantId: string; changed: boolean } | null> {
+	const changed = await (
+		block
+			? db
+					.prepare(
+						'UPDATE links SET blocked_at = ?, blocked_reason = ? WHERE id = ? AND blocked_at IS NULL RETURNING tenant_id'
+					)
+					.bind(block.now, block.reason, linkId)
+			: db
+					.prepare(
+						'UPDATE links SET blocked_at = NULL, blocked_reason = NULL WHERE id = ? AND blocked_at IS NOT NULL RETURNING tenant_id'
+					)
+					.bind(linkId)
+	).first<{ tenant_id: unknown }>();
+	if (changed) return { tenantId: text(changed.tenant_id, 'tenant'), changed: true };
+	const existing = await db
+		.prepare('SELECT tenant_id FROM links WHERE id = ?')
+		.bind(linkId)
+		.first<{ tenant_id: unknown }>();
+	return existing ? { tenantId: text(existing.tenant_id, 'tenant'), changed: false } : null;
+}
+
+// The operator's list of slugs kept off the platform domains, in slug order, at most 1,000.
+// taken: a link on a platform domain has used the slug, so removing it from the list frees
+// nothing.
+export async function listReservedSlugs(
+	db: D1Database
+): Promise<{ slug: string; createdAt: number; taken: boolean }[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT r.slug, r.created_at, EXISTS (
+				SELECT 1 FROM slug_reservations s JOIN domains d ON d.id = s.domain_id
+				WHERE s.slug = r.slug AND d.tenant_id IS NULL
+			) AS taken
+			FROM reserved_slugs r ORDER BY r.slug LIMIT 1000`
+		)
+		.all<{ slug: unknown; created_at: unknown; taken: unknown }>();
+	return results.map((row) => ({
+		slug: text(row.slug, 'slug'),
+		createdAt: time(row.created_at, 'creation time'),
+		taken: row.taken === 1
+	}));
+}
+
+// Adds or removes one slug; returns whether the list changed. The caller validates the slug.
+export async function setSlugReserved(
+	db: D1Database,
+	slug: string,
+	reserved: boolean,
+	now: number
+): Promise<boolean> {
+	const result = await (
+		reserved
+			? db
+					.prepare(
+						'INSERT INTO reserved_slugs (slug, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING'
+					)
+					.bind(slug, now)
+			: db.prepare('DELETE FROM reserved_slugs WHERE slug = ?').bind(slug)
+	).run();
+	return result.meta.changes > 0;
+}

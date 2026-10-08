@@ -1,0 +1,15 @@
+{
+	"name": "@flared/client",
+	"private": true,
+	"type": "module",
+	"license": "AGPL-3.0-only",
+	"exports": {
+		".": "./src/client.ts",
+		"./qr": "./src/qr.ts",
+		"./export": "./src/export.ts"
+	},
+	"dependencies": {
+		"@flared/contracts": "workspace:*",
+		"lean-qr": "2.7.4"
+	}
+}

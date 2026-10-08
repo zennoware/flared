@@ -1,0 +1,84 @@
+{
+	"name": "@flared/ui",
+	"private": true,
+	"type": "module",
+	"license": "AGPL-3.0-only",
+	"exports": {
+		"./links/LinkCreateForm.svelte": {
+			"types": "./src/links/LinkCreateForm.svelte",
+			"svelte": "./src/links/LinkCreateForm.svelte"
+		},
+		"./links/LinkList.svelte": {
+			"types": "./src/links/LinkList.svelte",
+			"svelte": "./src/links/LinkList.svelte"
+		},
+		"./links/LinkQr.svelte": {
+			"types": "./src/links/LinkQr.svelte",
+			"svelte": "./src/links/LinkQr.svelte"
+		},
+		"./links/messages": "./src/links/messages.ts",
+		"./passkeys/PasskeyList.svelte": {
+			"types": "./src/passkeys/PasskeyList.svelte",
+			"svelte": "./src/passkeys/PasskeyList.svelte"
+		},
+		"./passkeys/client": "./src/passkeys/client.ts",
+		"./analytics/LinkAnalytics.svelte": {
+			"types": "./src/analytics/LinkAnalytics.svelte",
+			"svelte": "./src/analytics/LinkAnalytics.svelte"
+		},
+		"./tokens/TokenList.svelte": {
+			"types": "./src/tokens/TokenList.svelte",
+			"svelte": "./src/tokens/TokenList.svelte"
+		},
+		"./tokens/client": "./src/tokens/client.ts",
+		"./account/DeleteAccount.svelte": {
+			"types": "./src/account/DeleteAccount.svelte",
+			"svelte": "./src/account/DeleteAccount.svelte"
+		},
+		"./export/ExportPanel.svelte": {
+			"types": "./src/export/ExportPanel.svelte",
+			"svelte": "./src/export/ExportPanel.svelte"
+		},
+		"./oauth/ConsentCard.svelte": {
+			"types": "./src/oauth/ConsentCard.svelte",
+			"svelte": "./src/oauth/ConsentCard.svelte"
+		},
+		"./oauth/ConnectedAppList.svelte": {
+			"types": "./src/oauth/ConnectedAppList.svelte",
+			"svelte": "./src/oauth/ConnectedAppList.svelte"
+		},
+		"./oauth/client": "./src/oauth/client.ts",
+		"./domains/DomainList.svelte": {
+			"types": "./src/domains/DomainList.svelte",
+			"svelte": "./src/domains/DomainList.svelte"
+		},
+		"./domains/client": "./src/domains/client.ts",
+		"./usage/UsageBanner.svelte": {
+			"types": "./src/usage/UsageBanner.svelte",
+			"svelte": "./src/usage/UsageBanner.svelte"
+		},
+		"./usage/UsageMeters.svelte": {
+			"types": "./src/usage/UsageMeters.svelte",
+			"svelte": "./src/usage/UsageMeters.svelte"
+		},
+		"./workspace/WorkspaceName.svelte": {
+			"types": "./src/workspace/WorkspaceName.svelte",
+			"svelte": "./src/workspace/WorkspaceName.svelte"
+		},
+		"./theme/ThemeControl.svelte": {
+			"types": "./src/theme/ThemeControl.svelte",
+			"svelte": "./src/theme/ThemeControl.svelte"
+		},
+		"./styles": "./src/styles/index.css",
+		"./navigation": "./src/navigation.ts",
+		"./styles/controls": "./src/styles/controls.css"
+	},
+	"dependencies": {
+		"@flared/client": "workspace:*",
+		"@flared/contracts": "workspace:*",
+		"@simplewebauthn/browser": "13.3.0"
+	},
+	"peerDependencies": {
+		"svelte": "^5.57.1"
+	}
+}

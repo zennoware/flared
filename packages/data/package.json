@@ -1,0 +1,28 @@
+{
+	"name": "@flared/data",
+	"private": true,
+	"type": "module",
+	"license": "AGPL-3.0-only",
+	"exports": {
+		"./analytics": "./src/analytics.ts",
+		"./identity": "./src/identity.ts",
+		"./identity-adapter": "./src/identity-adapter.ts",
+		"./identity-proof-guards": "./src/identity-proof-guards.ts",
+		"./links": "./src/links.ts",
+		"./routing-policy": "./src/routing-policy.ts",
+		"./tenancy": "./src/tenancy.ts",
+		"./setup": "./src/setup.ts",
+		"./tokens": "./src/tokens.ts",
+		"./oauth": "./src/oauth.ts",
+		"./domains": "./src/domains.ts",
+		"./notices": "./src/notices.ts",
+		"./deletions": "./src/deletions.ts",
+		"./operations": "./src/operations.ts"
+	},
+	"dependencies": {
+		"@flared/contracts": "workspace:*",
+		"better-auth": "1.7.7",
+		"@better-auth/drizzle-adapter": "1.7.7",
+		"drizzle-orm": "0.45.3"
+	}
+}

@@ -1,0 +1,57 @@
+{
+	// The standalone Flared Worker. Deploy on Cloudflare provisions the D1 databases and the
+	// Queues below, rewrites their IDs in your copy, and asks for the secrets in
+	// .dev.vars.example. The placeholder IDs match the local `wrangler dev` databases.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "flared",
+	"main": "apps/standalone/worker/index.ts",
+	// SvelteKit writes its Worker here (apps/standalone/wrangler.sveltekit.jsonc); the entry
+	// above wraps it.
+	"alias": { "sveltekit-worker": "./apps/standalone/.svelte-kit/cloudflare/_worker.js" },
+	"compatibility_date": "2026-08-22",
+	// global_fetch_strictly_public keeps OAuth client metadata fetches off private addresses.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"workers_dev": true,
+	"assets": {
+		"binding": "ASSETS",
+		"directory": "apps/standalone/.svelte-kit/cloudflare",
+		"run_worker_first": true
+	},
+	"observability": { "enabled": true },
+	"d1_databases": [
+		{
+			"binding": "IDENTITY",
+			"database_name": "flared-identity",
+			"database_id": "493d1138-72c5-4382-85cd-7a6e66cbe5b3",
+			"migrations_dir": "packages/data/migrations/identity"
+		},
+		{
+			"binding": "ROUTING",
+			"database_name": "flared-routing",
+			"database_id": "34c103cf-7a03-46fd-b9cd-f22ee2cb9b53",
+			"migrations_dir": "packages/data/migrations/routing"
+		},
+		{
+			"binding": "ANALYTICS_1",
+			"database_name": "flared-analytics-1",
+			"database_id": "3a1e9856-42e8-431f-b54e-bd7d9e038c3c",
+			"migrations_dir": "packages/data/migrations/analytics"
+		}
+	],
+	"queues": {
+		"producers": [{ "binding": "CLICKS", "queue": "flared-clicks" }],
+		// max_batch_size 5 keeps one consumer run within 50 D1 queries: a click takes about 10.
+		"consumers": [
+			{
+				"queue": "flared-clicks",
+				"max_batch_size": 5,
+				"max_batch_timeout": 5,
+				"max_retries": 5,
+				"dead_letter_queue": "flared-clicks-dlq"
+			},
+			{ "queue": "flared-clicks-dlq", "max_batch_size": 5, "max_batch_timeout": 30 }
+		]
+	},
+	// The frequent jobs every 10 minutes and daily maintenance (apps/standalone/worker/jobs.ts).
+	"triggers": { "crons": ["*/10 * * * *", "17 3 * * *"] }
+}
