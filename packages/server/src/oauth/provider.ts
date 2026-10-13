@@ -66,12 +66,19 @@ export async function hashOAuthToken(token: string, type: string): Promise<strin
 	return `${label}:${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
 }
 
-function sessionUserId(context: { user: { id?: unknown } }): string {
-	if (typeof context.user.id !== 'string') throw new Error('Session without a user');
-	return context.user.id;
+function userOf(context: { user: { id?: unknown } }): string {
+	const userId = context.user.id;
+	if (typeof userId !== 'string') throw new Error('Session without a user');
+	return userId;
 }
 
-export function createOAuthServer(db: D1Database, config: OAuthServerConfig) {
+// grantWorkspace is the workspace that the person chose on the consent page; the consent route
+// checks it first. Every other instance has none and cannot record a consent.
+export function createOAuthServer(
+	db: D1Database,
+	config: OAuthServerConfig,
+	grantWorkspace: string | null = null
+) {
 	return betterAuth({
 		...createSessionOptions(config.origin),
 		// Endpoints live at the origin root, such as /oauth2/token, so the issuer is the origin.
@@ -99,12 +106,16 @@ export function createOAuthServer(db: D1Database, config: OAuthServerConfig) {
 				allowDynamicClientRegistration: true,
 				allowUnauthenticatedClientRegistration: true,
 				clientRegistrationDefaultScopes: [...oauthScopes],
-				// The grant belongs to the signed-in user's workspace, never to a request parameter.
+				// The grant belongs to the chosen workspace, and only while the person still belongs to it.
 				postLogin: {
 					page: config.consentPath,
 					shouldRedirect: () => false,
 					async consentReferenceId(context) {
-						const tenant = await resolveTenant(db, sessionUserId(context));
+						if (grantWorkspace === null) throw new Error('No workspace chosen');
+						const tenant = await resolveTenant(db, {
+							userId: userOf(context),
+							tenantId: grantWorkspace
+						});
 						if (tenant.status !== 'active' || tenant.suspension)
 							throw new Error('No active workspace');
 						return tenant.tenantId;

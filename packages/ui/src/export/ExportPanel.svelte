@@ -2,6 +2,8 @@
 <script lang="ts">
 	import type { ExportProgress } from '@flared/client/export';
 	import { buildExport, buildLinksCsv, exportErrorMessage, ExportFailure } from './client';
+	import SettingRow from '../molecules/SettingRow.svelte';
+	import Button from '../atoms/Button.svelte';
 
 	interface Props {
 		// The path of the /v1 API for this browser, such as "/api/v1".
@@ -22,6 +24,22 @@
 	const history = $derived(
 		retentionDays === null ? 'the click history you still have' : `${retentionDays} days of clicks`
 	);
+	const files = $derived([
+		{
+			kind: 'csv' as const,
+			icon: 'file' as const,
+			title: 'Export links',
+			description: 'Download your links as a spreadsheet.',
+			label: 'Download CSV'
+		},
+		{
+			kind: 'json' as const,
+			icon: 'chart' as const,
+			title: 'Export links and clicks',
+			description: `Includes your links and ${history}.`,
+			label: 'Download JSON'
+		}
+	]);
 
 	function save(blob: Blob, filename: string) {
 		const href = URL.createObjectURL(blob);
@@ -60,75 +78,49 @@
 </script>
 
 <section class="export" aria-labelledby="export-heading">
-	<h2 id="export-heading">Export your data</h2>
-	<p class="lead">
-		Download every link and {history} as one JSON file, or only the links as CSV for a spreadsheet. The
-		file is built in this browser.
-	</p>
+	<h3 id="export-heading" class="visually-hidden">Export your data</h3>
+	{#each files as file (file.kind)}
+		<SettingRow icon={file.icon} title={file.title} description={file.description}>
+			{#if pending === file.kind}
+				<Button onclick={() => controller?.abort()}>Cancel export</Button>
+			{:else}
+				<Button icon="download" disabled={pending !== null} onclick={() => void start(file.kind)}
+					>{file.label}</Button
+				>
+			{/if}
+		</SettingRow>
+	{/each}
 	<p class="status" role="status" aria-live="polite">
 		{#if progress}Fetched {numbers.format(progress.links)} links and {numbers.format(
 				progress.dailyTotals + progress.dailyDimensions
 			)} analytics rows…{:else}{status}{/if}
 	</p>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
-	<div class="actions">
-		{#if pending}
-			<button type="button" class="quiet" onclick={() => controller?.abort()}>Cancel export</button>
-		{:else}
-			<button type="button" onclick={() => void start('json')}>Download JSON</button>
-			<button type="button" class="quiet" onclick={() => void start('csv')}
-				>Download links as CSV</button
-			>
-		{/if}
-	</div>
 </section>
 
 <style>
 	.export {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
 	}
-	h2 {
-		font-size: 1.05rem;
-	}
-	.lead,
 	.status {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
+		padding-top: 0.6rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
 	.status:empty {
 		display: none;
 	}
 	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
+		padding-top: 0.6rem;
+		color: var(--color-danger);
+		font-size: 0.875rem;
 	}
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-	button {
-		min-height: 44px;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--color-button-primary, #101828);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-weight: 620;
-	}
-	button:hover {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	button.quiet {
-		border-color: var(--color-rule, #d0d5dd);
-		background: var(--color-paper, #fff);
-		color: var(--color-ink, #101828);
-	}
-	button.quiet:hover {
-		background: var(--color-surface, #f9fafb);
-		border-color: var(--color-muted, #667085);
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 </style>

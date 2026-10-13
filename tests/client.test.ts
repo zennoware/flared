@@ -60,7 +60,14 @@ function api() {
 			if (request.headers.has('authorization'))
 				return authenticateBearer(auth, identity(), request);
 			const userId = request.headers.get('x-test-user');
-			return userId ? { kind: 'session', userId, signedInAt: new Date().toISOString() } : null;
+			return userId
+				? {
+						kind: 'session',
+						sessionId: 'session-test',
+						userId,
+						signedInAt: new Date().toISOString()
+					}
+				: null;
 		}
 	});
 }
@@ -74,7 +81,22 @@ const sessionOnly = [
 	'DELETE /connected-apps/{clientId}',
 	'GET /workspace',
 	'PATCH /workspace',
-	'GET /icons/{hostname}'
+	'GET /workspaces',
+	'POST /workspaces',
+	'POST /workspaces/active',
+	'GET /icons/{hostname}',
+	'GET /members',
+	'POST /invites',
+	'POST /invites/lookup',
+	'POST /invites/accept',
+	'POST /invites/{id}/resend',
+	'DELETE /invites/{id}',
+	'DELETE /members/{userId}',
+	'POST /workspace/leave',
+	'POST /workspace/transfer',
+	'DELETE /workspace/transfer',
+	'POST /workspace/transfer/accept',
+	'POST /members/{userId}/password-reset'
 ];
 const document = openApiDocument(baseUrl);
 type Operation = { responses: Record<string, { content?: Record<string, { schema: unknown }> }> };
@@ -200,7 +222,11 @@ describe('API client', () => {
 		const session = await api().fetch(
 			new Request(`${baseUrl}/me`, { headers: { 'x-test-user': 'user-1' } })
 		);
-		expect(await session.json()).toEqual({ kind: 'session', scopes: [...tokenScopes] });
+		expect(await session.json()).toEqual({
+			kind: 'session',
+			scopes: [...tokenScopes],
+			workspace: { id: 'tenant-1', name: 'Workspace', role: 'owner' }
+		});
 	});
 
 	it('creates, replays, lists, reads, edits, and measures links', async () => {

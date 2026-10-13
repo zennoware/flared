@@ -43,11 +43,15 @@ async function domainOf(response: Response): Promise<DomainResult<Domain>> {
 		: { ok: false, failure: unavailable };
 }
 
-export async function addDomain(apiBase: string, hostname: string): Promise<DomainResult<Domain>> {
+export async function addDomain(
+	apiBase: string,
+	hostname: string,
+	workspace: Record<string, string> = {}
+): Promise<DomainResult<Domain>> {
 	try {
 		const response = await fetch(`${apiBase}/domains`, {
 			method: 'POST',
-			headers: { 'content-type': 'application/json' },
+			headers: { 'content-type': 'application/json', ...workspace },
 			body: JSON.stringify({ hostname })
 		});
 		// 200 means the workspace already has this hostname, which is success for the person.
@@ -59,10 +63,15 @@ export async function addDomain(apiBase: string, hostname: string): Promise<Doma
 	}
 }
 
-export async function checkDomain(apiBase: string, id: string): Promise<DomainResult<Domain>> {
+export async function checkDomain(
+	apiBase: string,
+	id: string,
+	workspace: Record<string, string> = {}
+): Promise<DomainResult<Domain>> {
 	try {
 		const response = await fetch(`${apiBase}/domains/${encodeURIComponent(id)}/check`, {
-			method: 'POST'
+			method: 'POST',
+			headers: workspace
 		});
 		if (!response.ok) return { ok: false, failure: await failureOf(response) };
 		return await domainOf(response);
@@ -71,10 +80,15 @@ export async function checkDomain(apiBase: string, id: string): Promise<DomainRe
 	}
 }
 
-export async function removeDomain(apiBase: string, id: string): Promise<DomainResult<null>> {
+export async function removeDomain(
+	apiBase: string,
+	id: string,
+	workspace: Record<string, string> = {}
+): Promise<DomainResult<null>> {
 	try {
 		const response = await fetch(`${apiBase}/domains/${encodeURIComponent(id)}`, {
-			method: 'DELETE'
+			method: 'DELETE',
+			headers: workspace
 		});
 		return response.status === 204
 			? { ok: true, value: null }
@@ -95,6 +109,8 @@ export function domainErrorMessage(failure: DomainFailure): string {
 			return failure.message ?? 'Enter a hostname such as go.example.com.';
 		case 'DOMAIN_TAKEN':
 			return failure.message ?? 'This hostname is already in use.';
+		case 'OWNER_REQUIRED':
+			return 'Only the workspace owner can change domains.';
 		case 'DOMAIN_LIMIT_REACHED':
 			return 'You have used all your custom domains. Remove a domain to add another.';
 		case 'DOMAINS_UNAVAILABLE':
@@ -109,6 +125,8 @@ export function domainErrorMessage(failure: DomainFailure): string {
 			return 'This domain was already removed.';
 		case 'UNAUTHENTICATED':
 			return 'Your session ended. Sign in again.';
+		case 'WORKSPACE_CHANGED':
+			return 'You switched workspaces in another tab. Reload the page to continue.';
 		default:
 			return 'Something went wrong. Try again.';
 	}

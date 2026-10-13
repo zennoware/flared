@@ -547,7 +547,12 @@ describe('analytics API', () => {
 			authenticate: async (request) => {
 				const userId = request.headers.get('x-test-user');
 				return userId
-					? { kind: 'session', userId, signedInAt: new Date(clock).toISOString() }
+					? {
+							kind: 'session',
+							sessionId: 'session-test',
+							userId,
+							signedInAt: new Date(clock).toISOString()
+						}
 					: null;
 			},
 			now: () => clock
@@ -669,6 +674,7 @@ describe('analytics API', () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({
 			usage: {
+				workspace: { id: 'api-b', name: 'Workspace' },
 				month: '2026-10',
 				clicks: 1,
 				clickLimit: 5000,

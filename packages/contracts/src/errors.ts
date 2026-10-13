@@ -23,6 +23,21 @@ export const errorStatus = {
 	WORKSPACE_PENDING: 503,
 	ACCOUNT_DELETING: 409,
 	WORKSPACE_SUSPENDED: 403,
+	// A dashboard tab sent a change for a workspace the session no longer acts in.
+	WORKSPACE_CHANGED: 409,
+	// The person cannot create another workspace now; the message says why.
+	WORKSPACE_LIMIT_REACHED: 403,
+	// The person's role in the workspace does not allow the change.
+	OWNER_REQUIRED: 403,
+	// Members and open invites fill the workspace's member limit.
+	MEMBER_LIMIT_REACHED: 403,
+	ALREADY_MEMBER: 409,
+	// The address already has an open invite to the workspace.
+	INVITE_PENDING: 409,
+	// The signed-in person's address is not the one the invite is for.
+	INVITE_FOR_ANOTHER_EMAIL: 403,
+	// The owner cannot leave or be removed; the workspace needs an owner.
+	OWNER_CANNOT_LEAVE: 409,
 	LINK_BLOCKED: 409,
 	NOT_FOUND: 404,
 	METHOD_NOT_ALLOWED: 405,

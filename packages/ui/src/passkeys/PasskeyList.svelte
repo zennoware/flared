@@ -2,6 +2,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { maxPasskeyNameLength, type PasskeyPage } from '@flared/contracts/passkeys';
+	import SettingRow from '../molecules/SettingRow.svelte';
+	import Button from '../atoms/Button.svelte';
+	import Badge from '../atoms/Badge.svelte';
+	import Glyph from '../icons/Glyph.svelte';
 	import {
 		addPasskey,
 		deletePasskey,
@@ -28,6 +32,8 @@
 	let renamingId = $state<string | null>(null);
 	let renameValue = $state('');
 	let confirmingId = $state<string | null>(null);
+	// The name field opens from the header button, so the card stays short.
+	let adding = $state(false);
 
 	const dates = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 	const fresh = () => page.freshUntil !== null && Date.parse(page.freshUntil) > Date.now();
@@ -55,7 +61,10 @@
 	async function add() {
 		if (!fresh()) return onReauthRequired();
 		const name = newName.trim() || 'Passkey';
-		if (await run('add', () => addPasskey(name), `Added ${name}.`)) newName = '';
+		if (await run('add', () => addPasskey(name), `Added ${name}.`)) {
+			newName = '';
+			adding = false;
+		}
 	}
 
 	async function rename(id: string) {
@@ -74,17 +83,64 @@
 </script>
 
 <section class="passkeys" aria-labelledby="passkeys-heading">
-	<h2 id="passkeys-heading">Passkeys</h2>
-	<p class="lead">
-		Sign in with your fingerprint, face, or device PIN instead of an emailed code. Email sign-in
-		stays available.
-	</p>
+	<SettingRow
+		icon="key"
+		id="passkeys-heading"
+		title="Passkeys"
+		description="Sign in with your fingerprint, face, or device PIN."
+	>
+		<div class="summary">
+			<p class="count">
+				{page.passkeys.length === 0
+					? 'None added'
+					: `${page.passkeys.length} ${page.passkeys.length === 1 ? 'passkey' : 'passkeys'}`}
+			</p>
+			<p class="note">Email sign-in stays available.</p>
+		</div>
+		{#if supported && !adding}
+			<Button variant="primary" disabled={pending !== null} onclick={() => (adding = true)}
+				>Add passkey</Button
+			>
+		{/if}
+	</SettingRow>
 	<p class="status" role="status" aria-live="polite">{status}</p>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 
-	{#if page.passkeys.length === 0}
-		<p class="empty">No passkeys yet.</p>
-	{:else}
+	{#if adding}
+		<form
+			class="add"
+			onsubmit={(event) => {
+				event.preventDefault();
+				void add();
+			}}
+		>
+			<label for="passkey-name">Name <span class="optional">optional</span></label>
+			<div class="add-row">
+				<!-- svelte-ignore a11y_autofocus -->
+				<input
+					id="passkey-name"
+					bind:value={newName}
+					maxlength={maxPasskeyNameLength}
+					placeholder="Work laptop"
+					autocomplete="off"
+					autofocus
+				/>
+				<Button type="submit" variant="primary" disabled={pending !== null}
+					>{pending === 'add' ? 'Waiting for your device…' : 'Continue'}</Button
+				>
+				<Button
+					variant="ghost"
+					disabled={pending !== null}
+					onclick={() => {
+						adding = false;
+						newName = '';
+					}}>Cancel</Button
+				>
+			</div>
+		</form>
+	{/if}
+
+	{#if page.passkeys.length > 0}
 		<ul>
 			{#each page.passkeys as passkey (passkey.id)}
 				{@const label = passkey.name ?? 'Passkey'}
@@ -104,53 +160,55 @@
 								maxlength={maxPasskeyNameLength}
 								required
 							/>
-							<button type="submit" disabled={pending !== null}>Save</button>
-							<button type="button" class="quiet" onclick={() => (renamingId = null)}>Cancel</button
+							<Button type="submit" size="sm" variant="primary" disabled={pending !== null}
+								>Save</Button
 							>
+							<Button size="sm" variant="ghost" onclick={() => (renamingId = null)}>Cancel</Button>
 						</form>
 					{:else}
+						<span class="device"><Glyph name="laptop" size={22} /></span>
 						<div class="main">
-							<span class="name">{label}</span>
-							<span class="meta">
-								{#if passkey.createdAt}Added <time datetime={passkey.createdAt}
+							<span class="name"
+								>{label}{#if passkey.backedUp}<Badge>Synced</Badge>{/if}</span
+							>
+							{#if passkey.createdAt}<span class="meta"
+									>Added <time datetime={passkey.createdAt}
 										>{dates.format(new Date(passkey.createdAt))}</time
-									>{/if}
-								{#if passkey.backedUp}<span class="badge">Synced</span>{/if}
-							</span>
+									></span
+								>{/if}
 						</div>
 						<div class="actions">
 							{#if confirmingId === passkey.id}
 								<span class="confirm">Delete {label}?</span>
-								<button
-									type="button"
-									class="danger"
+								<Button
+									size="sm"
+									variant="danger"
 									disabled={pending !== null}
-									onclick={() => void remove(passkey.id)}>Delete</button
+									onclick={() => void remove(passkey.id)}>Delete</Button
 								>
-								<button type="button" class="quiet" onclick={() => (confirmingId = null)}
-									>Keep</button
+								<Button size="sm" variant="ghost" onclick={() => (confirmingId = null)}>Keep</Button
 								>
 							{:else}
-								<button
-									type="button"
-									class="quiet"
+								<Button
+									size="sm"
+									variant="ghost"
 									disabled={pending !== null}
 									aria-label={`Rename ${label}`}
 									onclick={() => {
 										renamingId = passkey.id;
 										renameValue = passkey.name ?? '';
 										confirmingId = null;
-									}}>Rename</button
+									}}>Rename</Button
 								>
-								<button
-									type="button"
-									class="quiet"
+								<Button
+									size="sm"
+									variant="danger-soft"
 									disabled={pending !== null}
 									aria-label={`Delete ${label}`}
 									onclick={() => {
 										confirmingId = passkey.id;
 										renamingId = null;
-									}}>Delete</button
+									}}>Delete…</Button
 								>
 							{/if}
 						</div>
@@ -160,27 +218,7 @@
 		</ul>
 	{/if}
 
-	{#if supported}
-		<form
-			class="add"
-			onsubmit={(event) => {
-				event.preventDefault();
-				void add();
-			}}
-		>
-			<label for="passkey-name">Name <span class="optional">optional</span></label>
-			<input
-				id="passkey-name"
-				bind:value={newName}
-				maxlength={maxPasskeyNameLength}
-				placeholder="Work laptop"
-				autocomplete="off"
-			/>
-			<button type="submit" disabled={pending !== null}
-				>{pending === 'add' ? 'Waiting for your device…' : 'Add a passkey'}</button
-			>
-		</form>
-	{:else}
+	{#if !supported}
 		<p class="empty">This browser cannot use passkeys. Open this page in a current browser.</p>
 	{/if}
 </section>
@@ -188,154 +226,123 @@
 <style>
 	.passkeys {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
+		gap: 0.5rem;
 	}
-	h2 {
-		font-size: 1.05rem;
+	.summary {
+		display: grid;
+		flex: 1;
+		gap: 0.15rem;
 	}
-	.lead,
+	.count {
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+	}
+	.note,
 	.status,
 	.empty,
 	.meta,
 	.optional {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
 	.status:empty {
 		display: none;
 	}
 	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
-	}
-	ul {
-		display: grid;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-paper, #fff);
-	}
-	li {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: space-between;
-		align-items: center;
-		gap: 0.75rem;
-		padding: 0.85rem 1rem;
-	}
-	li + li {
-		border-top: 1px solid var(--color-rule, #d0d5dd);
-	}
-	.main {
-		display: grid;
-		gap: 0.15rem;
-		min-width: 0;
-	}
-	.name {
-		color: var(--color-strong, #101828);
-		font-weight: 650;
-		overflow-wrap: anywhere;
-	}
-	.meta {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem;
-	}
-	.badge {
-		padding: 0.05rem 0.45rem;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: 999px;
-		font-size: 0.75rem;
-	}
-	.actions,
-	.rename {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem;
-	}
-	.rename {
-		width: 100%;
-	}
-	.rename label {
-		width: 100%;
-	}
-	.rename input {
-		flex: 1 1 12rem;
-	}
-	.confirm {
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
+		color: var(--color-danger);
+		font-size: 0.875rem;
 	}
 	.add {
 		display: grid;
 		gap: 0.4rem;
-		max-width: 24rem;
+		margin-left: 3.25rem;
+		padding: 0.5rem 0 1rem;
+		border-bottom: 1px solid var(--color-rule);
 	}
-	label {
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
-		font-weight: 650;
-	}
-	input {
-		width: 100%;
-		min-width: 0;
-		min-height: 44px;
-		padding: 0.6rem 0.8rem;
-		color: var(--color-ink, #101828);
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
-	}
-	input:focus-visible {
-		border-color: var(--color-muted, #667085);
-		outline: 1px solid var(--color-muted, #667085);
-		outline-offset: -1px;
-	}
-	button {
-		min-height: 44px;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--color-button-primary, #101828);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-weight: 620;
-	}
-	button:hover:not(:disabled) {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	.add button {
-		justify-self: start;
-	}
-	button.quiet {
-		min-height: 40px;
-		padding: 0.4rem 0.8rem;
-		border-color: var(--color-rule, #d0d5dd);
-		background: var(--color-paper, #fff);
-		color: var(--color-ink, #101828);
-		font-size: 0.8rem;
+	.add label,
+	.rename label {
+		color: var(--color-strong);
+		font-size: 0.9375rem;
 		font-weight: 600;
 	}
-	button.quiet:hover:not(:disabled) {
-		border-color: var(--color-muted, #667085);
-		background: var(--color-paper, #fff);
+	.optional {
+		font-weight: 400;
 	}
-	button.danger,
-	button.danger:hover:not(:disabled) {
-		min-height: 40px;
-		padding: 0.4rem 0.8rem;
-		border-color: var(--color-button-danger, #b42318);
-		background: var(--color-button-danger, #b42318);
-		font-size: 0.8rem;
+	.add-row,
+	.rename {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
 	}
-	button:disabled {
-		color: var(--color-muted, #667085);
-		background: var(--color-disabled, #eaecf0);
-		border-color: var(--color-disabled, #eaecf0);
+	.rename {
+		flex: 1;
+	}
+	.rename label {
+		flex-basis: 100%;
+	}
+	input {
+		flex: 1 1 14rem;
+		min-width: 0;
+		min-height: 2.75rem;
+		padding: 0 0.9rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-control, 0.5rem);
+		background: var(--color-input);
+		color: var(--color-strong);
+		font: inherit;
+		font-size: 0.9375rem;
+	}
+	input:focus {
+		border-color: var(--color-strong);
+		outline: 1px solid var(--color-strong);
+		outline-offset: -1px;
+	}
+	ul {
+		display: grid;
+		margin: 0 0 0 3.25rem;
+		padding: 0;
+		list-style: none;
+	}
+	li {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem 0.9rem;
+		padding: 0.85rem 0;
+		border-bottom: 1px solid var(--color-rule);
+	}
+	.device {
+		display: grid;
+		color: var(--color-lead);
+	}
+	.main {
+		display: grid;
+		flex: 1 1 12rem;
+		gap: 0.1rem;
+		min-width: 0;
+	}
+	.name {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--color-strong);
+		font-weight: 600;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.confirm {
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+	}
+	@media (max-width: 40rem) {
+		.add,
+		ul {
+			margin-left: 0;
+		}
 	}
 </style>

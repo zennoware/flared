@@ -1,8 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script lang="ts">
-	import { usageLevel, type Usage } from '@flared/contracts/analytics';
+	import type { Usage } from '@flared/contracts/analytics';
+	import Glyph, { type GlyphName } from '../icons/Glyph.svelte';
+	import Meter from '../atoms/Meter.svelte';
 
-	let { usage }: { usage: Usage } = $props();
+	// A null heading leaves the title to the surrounding card; the section keeps its name.
+	let { usage, heading = 'Usage' }: { usage: Usage; heading?: string | null } = $props();
 
 	const numbers = new Intl.NumberFormat();
 	const dates = new Intl.DateTimeFormat(undefined, {
@@ -10,50 +13,60 @@
 		timeStyle: 'short',
 		timeZone: 'UTC'
 	});
+	const months = new Intl.DateTimeFormat(undefined, {
+		month: 'long',
+		year: 'numeric',
+		timeZone: 'UTC'
+	});
+	const period = $derived(months.format(new Date(`${usage.month}-01T00:00:00Z`)));
 
-	const meters = $derived([
-		{ id: 'links', label: 'Active links', used: usage.links.used, limit: usage.links.limit },
+	const meters = $derived<
+		{ id: string; label: string; icon: GlyphName; used: number; limit: number }[]
+	>([
 		{
-			id: 'domains',
-			label: 'Custom domains',
-			used: usage.domains.used,
-			limit: usage.domains.limit
+			id: 'links',
+			label: 'active links',
+			icon: 'link',
+			used: usage.links.used,
+			limit: usage.links.limit
 		},
 		{
 			id: 'clicks',
-			label: `Recorded clicks in ${usage.month} (UTC)`,
+			label: 'recorded clicks this month',
+			icon: 'chart',
 			used: usage.clicks,
 			limit: usage.clickLimit
+		},
+		{
+			id: 'domains',
+			label: 'custom domains',
+			icon: 'globe',
+			used: usage.domains.used,
+			limit: usage.domains.limit
 		}
 	]);
-
-	// A limit of 0 shows an empty bar: the resource is turned off.
-	function share(used: number, limit: number): number {
-		return limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-	}
 </script>
 
-<section class="usage-meters" aria-labelledby="usage-meters-heading">
-	<h2 id="usage-meters-heading">Usage</h2>
+<section
+	class="usage-meters"
+	aria-labelledby={heading ? 'usage-meters-heading' : undefined}
+	aria-label={heading ? undefined : 'Usage'}
+>
+	{#if heading}<h2 id="usage-meters-heading">{heading}</h2>{/if}
 	<ul>
 		{#each meters as meter (meter.id)}
-			{@const level = usageLevel(meter.used, meter.limit)}
-			<li class:near={level === 80} class:full={level === 100}>
-				<div class="meter-head">
-					<span id="usage-{meter.id}">{meter.label}</span>
-					<span>{numbers.format(meter.used)} of {numbers.format(meter.limit)}</span>
-				</div>
-				<div
-					class="bar"
-					role="meter"
-					aria-labelledby="usage-{meter.id}"
-					aria-valuemin={0}
-					aria-valuemax={meter.limit}
-					aria-valuenow={Math.min(meter.used, meter.limit)}
-					aria-valuetext="{numbers.format(meter.used)} of {numbers.format(meter.limit)}"
-				>
-					<span style:width="{share(meter.used, meter.limit)}%"></span>
-				</div>
+			{@const ratio = meter.limit > 0 ? meter.used / meter.limit : 0}
+			<li class:near={ratio >= 0.8 && ratio < 1} class:full={meter.limit > 0 && ratio >= 1}>
+				<span class="icon"><Glyph name={meter.icon} size={28} /></span>
+				<span class="body">
+					<span class="count">{numbers.format(meter.used)} / {numbers.format(meter.limit)}</span>
+					<Meter
+						value={meter.used}
+						max={meter.limit}
+						label="{numbers.format(meter.used)} of {numbers.format(meter.limit)} {meter.label}"
+					/>
+					<span class="label">{meter.label}</span>
+				</span>
 			</li>
 		{/each}
 	</ul>
@@ -64,67 +77,92 @@
 				: ''} are not recorded. Your links keep redirecting.
 		</p>
 	{/if}
-	<p class="note">Analytics history: {numbers.format(usage.retentionDays)} days.</p>
+	<div class="foot">
+		<p class="note">{numbers.format(usage.retentionDays)} days of analytics history.</p>
+		<p class="note">Usage period: {period} (UTC)</p>
+	</div>
 </section>
 
 <style>
 	.usage-meters {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
+		gap: 1rem;
+		container-type: inline-size;
 	}
 	h2 {
-		font-size: 1rem;
+		font-size: 1.125rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
 	}
 	ul {
 		display: grid;
-		gap: 1rem;
+		gap: 1.25rem;
 		margin: 0;
 		padding: 0;
 		list-style: none;
 	}
-	.meter-head {
+	li {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: start;
+		gap: 1rem;
+		min-width: 0;
+	}
+	.icon {
+		display: grid;
+		margin-top: 0.1rem;
+		color: var(--color-ink);
+	}
+	.body {
+		display: grid;
+		gap: 0.45rem;
+		min-width: 0;
+	}
+	.count {
+		color: var(--color-strong);
+		font-size: 1.0625rem;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+	}
+	.label {
+		color: var(--color-lead);
+		font-size: 0.875rem;
+	}
+	.near .count {
+		color: var(--color-warning);
+	}
+	.full .count {
+		color: var(--color-danger);
+	}
+	.foot {
 		display: flex;
 		flex-wrap: wrap;
 		justify-content: space-between;
 		gap: 0.25rem 1rem;
-		color: var(--color-ink, #101828);
-		font-size: 0.9rem;
-	}
-	.meter-head span:last-child {
-		color: var(--color-muted, #667085);
-		font-variant-numeric: tabular-nums;
-	}
-	.bar {
-		height: 0.5rem;
-		margin-top: 0.4rem;
-		overflow: hidden;
-		border-radius: 999px;
-		background: var(--color-disabled, #f2f4f7);
-	}
-	/* Orange in use, amber from 80%, red when full; the count beside it says the same. */
-	.bar span {
-		display: block;
-		height: 100%;
-		border-radius: inherit;
-		background: var(--color-button-primary, #c94b00);
-	}
-	.near .bar span {
-		background: var(--color-warning, #b54708);
-	}
-	.full .bar span {
-		background: var(--color-button-danger, #b42318);
-	}
-	.near .meter-head span:last-child {
-		color: var(--color-warning, #b54708);
-		font-weight: 600;
-	}
-	.full .meter-head span:last-child {
-		color: var(--color-danger, #b42318);
-		font-weight: 600;
+		padding-top: 0.9rem;
+		border-top: 1px solid var(--color-rule);
 	}
 	.note {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
+	}
+	/* Side by side once each meter has room for its count. */
+	@container (min-width: 36rem) {
+		ul {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 0;
+		}
+		li {
+			padding-inline: 1.5rem;
+		}
+		li:first-child {
+			padding-left: 0;
+		}
+		li:last-child {
+			padding-right: 0;
+		}
+		li + li {
+			border-left: 1px solid var(--color-rule);
+		}
 	}
 </style>

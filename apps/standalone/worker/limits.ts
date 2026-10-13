@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// /api/settings/limits: the owner reads and changes the workspace limits. A change needs the
+// /api/settings/limits: a member reads, and the owner changes, the workspace limits. A change needs the
 // session cookie, the exact app Origin, and a sign-in from the last 10 minutes. It stores a new
 // policy revision and projects it; the answer says whether both stores hold it yet.
 import { readPolicyProjection, type PolicyLimits } from '@flared/data/tenancy';
@@ -10,12 +10,13 @@ import type { AuthService } from '@flared/server/web';
 import type { StandaloneConfig } from './config';
 
 // Bounds of each limit. Higher values are possible on D1 and Queues but cost more; see
-// docs/self-hosting/limits.md.
+// docs/self-hosting/limits.md. The member limit counts the owner and open invites.
 export const limitBounds: Record<keyof PolicyLimits, { min: number; max: number }> = {
 	activeLinkLimit: { min: 1, max: 1_000_000 },
 	monthlyClickLimit: { min: 1, max: 100_000_000 },
 	retentionDays: { min: 1, max: 3650 },
-	domainLimit: { min: 0, max: 50 }
+	domainLimit: { min: 0, max: 50 },
+	memberLimit: { min: 1, max: 100 }
 };
 
 function failure(code: string, status: number, message: string): Response {
@@ -47,7 +48,8 @@ function parseLimits(value: unknown): PolicyLimits | null {
 		activeLinkLimit: limits.activeLinkLimit,
 		monthlyClickLimit: limits.monthlyClickLimit,
 		retentionDays: limits.retentionDays,
-		domainLimit: limits.domainLimit
+		domainLimit: limits.domainLimit,
+		memberLimit: limits.memberLimit
 	};
 }
 
@@ -66,7 +68,8 @@ async function view(config: StandaloneConfig, tenantId: string): Promise<Respons
 				activeLinkLimit: policy.activeLinkLimit,
 				monthlyClickLimit: policy.monthlyClickLimit,
 				retentionDays: policy.retentionDays,
-				domainLimit: policy.domainLimit
+				domainLimit: policy.domainLimit,
+				memberLimit: policy.memberLimit
 			},
 			pending:
 				policy.routingRevision < policy.revision || policy.analyticsRevision < policy.revision,
@@ -91,10 +94,15 @@ export async function handleLimits(
 		return failure('ORIGIN_REJECTED', 403, 'This request must come from the Flared app.');
 	const principal = await sessionPrincipal(request, auth, config.origin);
 	if (principal?.kind !== 'session') return failure('UNAUTHENTICATED', 401, 'Sign in to continue.');
-	const tenant = await resolveTenant(config.identity, principal.userId);
+	const tenant = await resolveTenant(config.identity, {
+		userId: principal.userId,
+		sessionId: principal.sessionId
+	});
 	if (tenant.status !== 'active' || tenant.tenantId !== fixedTenantId)
 		return failure('NO_WORKSPACE', 403, 'Your account has no workspace.');
 	if (request.method === 'GET') return view(config, tenant.tenantId);
+	if (tenant.role !== 'owner')
+		return failure('OWNER_REQUIRED', 403, 'Only the workspace owner can change the limits.');
 	if (freshUntil(principal) === null)
 		return failure('REAUTH_REQUIRED', 403, 'Confirm it’s you, then change the limits.');
 	if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json'))

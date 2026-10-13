@@ -114,7 +114,8 @@ function fakeApi(state: { failWith?: ErrorCode; links?: object[]; domains?: obje
 			return Response.json({
 				kind: 'token',
 				scopes: ['links:read'],
-				token: { id: 't1', name: 'CI', start: token.slice(0, 8), expiresAt: null }
+				token: { id: 't1', name: 'CI', start: token.slice(0, 8), expiresAt: null },
+				workspace: { id: 'ws-1', name: 'Launch team', role: 'owner' }
 			});
 		if (path === '/links' && request.method === 'GET')
 			return Response.json({ links, nextCursor: null });
@@ -164,6 +165,7 @@ function fakeApi(state: { failWith?: ErrorCode; links?: object[]; domains?: obje
 		if (path === '/usage')
 			return Response.json({
 				usage: {
+					workspace: { id: 'ws-1', name: 'Launch team' },
 					month: '2026-10',
 					clicks: 3,
 					clickLimit: 5000,
@@ -312,8 +314,10 @@ describe('flared CLI', () => {
 		expect(accepted.code).toBe(exitCodes.ok);
 		expect(JSON.parse(accepted.stdout)).toMatchObject({
 			apiUrl: 'https://api.flared.page/v1',
-			kind: 'token'
+			kind: 'token',
+			workspace: { name: 'Launch team', role: 'owner' }
 		});
+		expect((await cli(['whoami'], { dir })).stdout).toContain('Workspace  Launch team (owner)');
 		const file = join(dir, 'config.json');
 		if (process.platform !== 'win32') {
 			expect((await stat(file)).mode & 0o777).toBe(0o600);
@@ -363,6 +367,14 @@ describe('flared CLI', () => {
 			DOMAIN_LIMIT_REACHED: 7,
 			ACCOUNT_DELETING: 4,
 			WORKSPACE_SUSPENDED: 4,
+			// Only the dashboard receives these; a token never does.
+			WORKSPACE_CHANGED: 1,
+			WORKSPACE_LIMIT_REACHED: 1,
+			MEMBER_LIMIT_REACHED: 1,
+			ALREADY_MEMBER: 1,
+			INVITE_PENDING: 1,
+			INVITE_FOR_ANOTHER_EMAIL: 1,
+			OWNER_CANNOT_LEAVE: 1,
 			LINK_BLOCKED: 4,
 			DOMAINS_UNAVAILABLE: 9,
 			DOMAIN_CHECK_TOO_SOON: 8,
@@ -370,6 +382,7 @@ describe('flared CLI', () => {
 			UNAUTHENTICATED: 3,
 			ORIGIN_REJECTED: 4,
 			INSUFFICIENT_SCOPE: 4,
+			OWNER_REQUIRED: 4,
 			REAUTH_REQUIRED: 4,
 			TOKEN_LIMIT_REACHED: 7,
 			NO_WORKSPACE: 4,
@@ -450,6 +463,7 @@ describe('flared CLI', () => {
 		expect(report.stdout).toContain('3 clicks from 2026-09-03 to 2026-10-02');
 		expect(report.stdout).toContain('US 3');
 		const usage = (await cli(['usage'], { env: signedIn })).stdout;
+		expect(usage).toContain('Workspace          Launch team');
 		expect(usage).toContain('Clicks in 2026-10  3 of 5000');
 		expect(usage).toContain('Active links       4 of 5 (80%)');
 		expect(usage).toContain('History            30 days');

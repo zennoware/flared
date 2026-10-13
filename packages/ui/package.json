@@ -4,6 +4,18 @@
 	"type": "module",
 	"license": "AGPL-3.0-only",
 	"exports": {
+		"./atoms/*.svelte": {
+			"types": "./src/atoms/*.svelte",
+			"svelte": "./src/atoms/*.svelte"
+		},
+		"./molecules/*.svelte": {
+			"types": "./src/molecules/*.svelte",
+			"svelte": "./src/molecules/*.svelte"
+		},
+		"./icons/Glyph.svelte": {
+			"types": "./src/icons/Glyph.svelte",
+			"svelte": "./src/icons/Glyph.svelte"
+		},
 		"./links/LinkCreateForm.svelte": {
 			"types": "./src/links/LinkCreateForm.svelte",
 			"svelte": "./src/links/LinkCreateForm.svelte"
@@ -11,6 +23,14 @@
 		"./links/LinkList.svelte": {
 			"types": "./src/links/LinkList.svelte",
 			"svelte": "./src/links/LinkList.svelte"
+		},
+		"./links/LinkDetails.svelte": {
+			"types": "./src/links/LinkDetails.svelte",
+			"svelte": "./src/links/LinkDetails.svelte"
+		},
+		"./links/LinkEditForm.svelte": {
+			"types": "./src/links/LinkEditForm.svelte",
+			"svelte": "./src/links/LinkEditForm.svelte"
 		},
 		"./links/LinkQr.svelte": {
 			"types": "./src/links/LinkQr.svelte",
@@ -53,6 +73,8 @@
 			"svelte": "./src/domains/DomainList.svelte"
 		},
 		"./domains/client": "./src/domains/client.ts",
+		"./workspace/shown": "./src/workspace/shown.ts",
+		"./workspace/client": "./src/workspace/client.ts",
 		"./usage/UsageBanner.svelte": {
 			"types": "./src/usage/UsageBanner.svelte",
 			"svelte": "./src/usage/UsageBanner.svelte"
@@ -65,13 +87,25 @@
 			"types": "./src/workspace/WorkspaceName.svelte",
 			"svelte": "./src/workspace/WorkspaceName.svelte"
 		},
+		"./workspace/DeleteWorkspace.svelte": {
+			"types": "./src/workspace/DeleteWorkspace.svelte",
+			"svelte": "./src/workspace/DeleteWorkspace.svelte"
+		},
+		"./workspace/Members.svelte": {
+			"types": "./src/workspace/Members.svelte",
+			"svelte": "./src/workspace/Members.svelte"
+		},
 		"./theme/ThemeControl.svelte": {
 			"types": "./src/theme/ThemeControl.svelte",
 			"svelte": "./src/theme/ThemeControl.svelte"
 		},
 		"./styles": "./src/styles/index.css",
 		"./navigation": "./src/navigation.ts",
-		"./styles/controls": "./src/styles/controls.css"
+		"./styles/controls": "./src/styles/controls.css",
+		"./*.svelte": {
+			"types": "./src/*.svelte",
+			"svelte": "./src/*.svelte"
+		}
 	},
 	"dependencies": {
 		"@flared/client": "workspace:*",

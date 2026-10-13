@@ -5,6 +5,10 @@
 		normalizeWorkspaceName,
 		workspaceNameMaxLength
 	} from '@flared/contracts/workspace';
+	import SettingRow from '../molecules/SettingRow.svelte';
+	import { shownWorkspace } from './shown';
+	import { linkErrorMessage } from '../links/messages';
+	import Button from '../atoms/Button.svelte';
 
 	interface Props {
 		// The path of the /v1 API for this browser, such as "/api/v1".
@@ -12,9 +16,18 @@
 		name: string;
 		// Runs after a rename, so the page can reload the name it shows elsewhere.
 		onRenamed: () => void | Promise<void>;
+		// Only the owner renames the workspace; a member sees the name.
+		editable?: boolean;
 	}
 
-	let { apiBase, name, onRenamed }: Props = $props();
+	let { apiBase, name, onRenamed, editable = true }: Props = $props();
+	const workspace = shownWorkspace();
+
+	function errorCodeOf(body: unknown): string {
+		const error = typeof body === 'object' && body !== null ? Reflect.get(body, 'error') : null;
+		const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : null;
+		return typeof code === 'string' ? code : '';
+	}
 
 	// The field starts from the saved name and keeps what the person types.
 	// svelte-ignore state_referenced_locally
@@ -37,17 +50,20 @@
 		try {
 			const response = await fetch(`${apiBase}/workspace`, {
 				method: 'PATCH',
-				headers: { 'content-type': 'application/json' },
+				headers: { 'content-type': 'application/json', ...workspace() },
 				body: JSON.stringify({ name: next })
 			});
 			const body: unknown = await response.json().catch(() => null);
-			const workspace =
+			const saved =
 				typeof body === 'object' && body !== null ? Reflect.get(body, 'workspace') : null;
-			if (!response.ok || !isWorkspace(workspace)) {
-				error = 'We could not rename the workspace. Try again.';
+			if (!response.ok || !isWorkspace(saved)) {
+				error = linkErrorMessage(
+					errorCodeOf(body),
+					'We could not rename the workspace. Try again.'
+				);
 				return;
 			}
-			value = workspace.name;
+			value = saved.name;
 			status = 'Workspace renamed.';
 			await onRenamed();
 		} catch {
@@ -58,91 +74,93 @@
 	}
 </script>
 
-<section class="workspace" aria-labelledby="workspace-heading">
-	<h2 id="workspace-heading">Workspace</h2>
-	<form onsubmit={save}>
-		<label for="workspace-name">Workspace name</label>
-		<div class="row">
-			<input
-				id="workspace-name"
-				bind:value
-				maxlength={workspaceNameMaxLength * 2}
-				autocomplete="off"
-				aria-invalid={error ? 'true' : undefined}
-				aria-describedby="workspace-help"
-			/>
-			<button type="submit" disabled={pending || unchanged}>{pending ? 'Saving…' : 'Save'}</button>
-		</div>
-		<p id="workspace-help" class="lead">The sidebar shows this name. Only you see it.</p>
-	</form>
-	<p class="status" role="status" aria-live="polite">{status}</p>
-	{#if error}<p class="error" role="alert">{error}</p>{/if}
-</section>
+<SettingRow
+	icon="user"
+	id="workspace-name-heading"
+	title="Workspace name"
+	description={editable
+		? 'Shown in your sidebar and on your plan and invoices.'
+		: 'Only the workspace owner can rename it.'}
+>
+	{#if !editable}
+		<p class="name">{name}</p>
+	{:else}
+		<form onsubmit={save} aria-labelledby="workspace-name-heading">
+			<div class="row">
+				<label class="visually-hidden" for="workspace-name">Workspace name</label>
+				<input
+					id="workspace-name"
+					bind:value
+					maxlength={workspaceNameMaxLength * 2}
+					autocomplete="off"
+					aria-invalid={error ? 'true' : undefined}
+					aria-describedby={error ? 'workspace-error' : undefined}
+				/>
+				<Button
+					type="submit"
+					variant={unchanged ? 'secondary' : 'primary'}
+					disabled={pending || unchanged}>{pending ? 'Saving…' : 'Save'}</Button
+				>
+			</div>
+			<p class="status" role="status" aria-live="polite">{status}</p>
+			{#if error}<p id="workspace-error" class="error" role="alert">{error}</p>{/if}
+		</form>
+	{/if}
+</SettingRow>
 
 <style>
-	.workspace {
-		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
-	}
-	h2 {
-		font-size: 1.05rem;
-	}
 	form {
 		display: grid;
+		flex: 1;
 		gap: 0.4rem;
-	}
-	label {
-		color: var(--color-strong, #101828);
-		font-size: 0.875rem;
-		font-weight: 600;
+		max-width: 38rem;
 	}
 	.row {
 		display: flex;
-		gap: 0.5rem;
+		gap: 0.75rem;
 	}
 	input {
 		flex: 1;
 		min-width: 0;
-		min-height: 44px;
-		padding: 0.5rem 0.75rem;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-input, #fff);
-		color: var(--color-ink, #101828);
+		min-height: 2.75rem;
+		padding: 0 0.9rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-control, 0.5rem);
+		background: var(--color-input);
+		color: var(--color-strong);
 		font: inherit;
+		font-size: 0.9375rem;
+	}
+	input:focus {
+		border-color: var(--color-strong);
+		outline: 1px solid var(--color-strong);
+		outline-offset: -1px;
 	}
 	input[aria-invalid='true'] {
-		border-color: var(--color-danger, #b42318);
+		border-color: var(--color-danger);
 	}
-	.lead,
+	.name {
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+		overflow-wrap: anywhere;
+	}
 	.status {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
 	.status:empty {
 		display: none;
 	}
 	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
+		color: var(--color-danger);
+		font-size: 0.875rem;
 	}
-	button {
-		min-height: 44px;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--color-button-primary, #101828);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-weight: 620;
-	}
-	button:hover:not(:disabled) {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	button:disabled {
-		border-color: var(--color-disabled, #f2f4f7);
-		background: var(--color-disabled, #f2f4f7);
-		color: var(--color-muted, #667085);
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 </style>

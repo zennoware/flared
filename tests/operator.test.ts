@@ -6,10 +6,10 @@
 import { env } from 'cloudflare:workers';
 import { applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createDeletion } from '../packages/data/src/deletions';
+import { createAccountDeletion } from '../packages/data/src/deletions';
 import { createTenant } from '../packages/data/src/tenancy';
 import { createApi, type ApiPrincipal } from '../packages/server/src/api';
-import { requestDeletion } from '../packages/server/src/deletion';
+import { requestAccountDeletion } from '../packages/server/src/deletion';
 import {
 	blockLink,
 	reinstateTenant,
@@ -67,7 +67,12 @@ function api() {
 						scopes: ['links:read', 'links:write', 'analytics:read'],
 						token: { id: 'token-1', name: '', start: 'fl_', expiresAt: null }
 					}
-				: { kind: 'session', userId, signedInAt: new Date(start).toISOString() };
+				: {
+						kind: 'session',
+						sessionId: 'session-test',
+						userId,
+						signedInAt: new Date(start).toISOString()
+					};
 		}
 	});
 }
@@ -387,18 +392,17 @@ describe('deletion during a suspension', () => {
 			reason: 'phishing',
 			now: start
 		});
-		expect(await requestDeletion(identity(), userId, start)).toEqual({
+		expect(await requestAccountDeletion(identity(), { userId }, start)).toEqual({
 			status: 'suspended',
-			tenantId
+			workspaceName: 'Workspace'
 		});
 		expect(await count(identity(), 'tenant_deletions WHERE tenant_id = ?', tenantId)).toBe(0);
 		expect(await count(identity(), '"session" WHERE "userId" = ?', userId)).toBe(1);
 		// The batch checks again, for a suspension that lands after the first check.
 		expect(
-			await createDeletion(identity(), {
-				tenantId,
+			await createAccountDeletion(identity(), {
 				userId,
-				analyticsShardId: 'analytics-1',
+				workspaces: [{ tenantId, analyticsShardId: 'analytics-1' }],
 				contactEmail: null,
 				now: start
 			})
@@ -407,9 +411,9 @@ describe('deletion during a suspension', () => {
 		expect(await count(identity(), '"session" WHERE "userId" = ?', userId)).toBe(1);
 
 		await reinstateTenant(identity(), stores(), operator, { tenantId, now: start });
-		expect(await requestDeletion(identity(), userId, start)).toEqual({
+		expect(await requestAccountDeletion(identity(), { userId }, start)).toEqual({
 			status: 'started',
-			tenantId
+			tenantIds: [tenantId]
 		});
 		expect(await count(identity(), '"session" WHERE "userId" = ?', userId)).toBe(0);
 		// A suspension cannot land on a workspace that is being deleted.
@@ -432,9 +436,9 @@ describe('access revocation', () => {
 					.bind(`session-${userId}`, start + 86400000, `token-${userId}`, userId),
 				identity()
 					.prepare(
-						'INSERT INTO "apikey" (id, referenceId, key, createdAt, updatedAt) VALUES (?, ?, ?, 0, 0)'
+						'INSERT INTO "apikey" (id, referenceId, key, createdAt, updatedAt, metadata) VALUES (?, ?, ?, 0, 0, json_object(\'tenantId\', ?))'
 					)
-					.bind(`key-${userId}`, userId, `hash-${userId}`),
+					.bind(`key-${userId}`, userId, `hash-${userId}`, tenantId),
 				identity()
 					.prepare(
 						'INSERT INTO "oauthClient" (id, clientId, redirectUris) VALUES (?, ?, \'["https://app.example/cb"]\')'

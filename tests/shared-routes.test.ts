@@ -12,8 +12,12 @@ import {
 	installD1ProofGuards,
 	withIdentityProofScope
 } from '../packages/data/src/identity-proof-guards';
-import { createTenant } from '../packages/data/src/tenancy';
-import { deleteAccount, type AccountDeletionEdition } from '../packages/server/src/account';
+import { createTenant, listWorkspaces } from '../packages/data/src/tenancy';
+import {
+	deleteAccount,
+	deleteWorkspace,
+	type AccountDeletionEdition
+} from '../packages/server/src/account';
 import { apiAuthenticator, sessionPrincipal } from '../packages/server/src/api/compose';
 import type { ApiTokenAuth } from '../packages/server/src/auth/api-tokens';
 import { checkedTableName, consumePasskeyBudget } from '../packages/server/src/auth/limits';
@@ -375,7 +379,7 @@ describe('account deletion route', () => {
 			return row?.name || null;
 		},
 		mismatchMessage: 'Type your name.',
-		suspendedMessage: 'Suspended.',
+		suspendedMessage: (name) => `${name} is suspended.`,
 		async refuse() {
 			return refusal ? { code: 'EDITION_REFUSED', status: 409, message: 'Not now.' } : null;
 		}
@@ -390,7 +394,12 @@ describe('account deletion route', () => {
 			{
 				identity: identity(),
 				appOrigin: origin,
-				authenticate: async () => ({ kind: 'session', userId, signedInAt: fresh }),
+				authenticate: async () => ({
+					kind: 'session',
+					sessionId: 'session-test',
+					userId,
+					signedInAt: fresh
+				}),
 				start: (tenantId) => started.push(tenantId),
 				edition
 			}
@@ -444,6 +453,114 @@ describe('account deletion route', () => {
 		expect(accepted.status).toBe(202);
 		expect(started).toEqual(['t-owner']);
 	});
+
+	it('keeps a workspace with members and deletes a person who only belongs to others', async () => {
+		started.length = 0;
+		await identity()
+			.prepare(
+				"INSERT INTO \"user\" (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('user-host', 'host', 'host@example.com', 1, 0, 0), ('user-guest', 'guest', 'guest@example.com', 1, 0, 0)"
+			)
+			.run();
+		await createTenant(identity(), {
+			id: 't-host',
+			name: 'Shared',
+			ownerUserId: 'user-host',
+			analyticsShardId: 'analytics-1',
+			limits: { activeLinkLimit: 10, monthlyClickLimit: 10, retentionDays: 30, domainLimit: 1 },
+			now: 1
+		});
+		await identity()
+			.prepare(
+				"INSERT INTO tenant_memberships (tenant_id, user_id, role, created_at) VALUES ('t-host', 'user-guest', 'member', 2)"
+			)
+			.run();
+		const shared = await remove('user-host', 'host');
+		expect(shared.status).toBe(409);
+		expect(await json(shared)).toMatchObject({ error: { code: 'WORKSPACE_HAS_MEMBERS' } });
+		expect(started).toEqual([]);
+
+		const guest = await remove('user-guest', 'guest');
+		expect(guest.status).toBe(202);
+		expect(started).toEqual([]);
+		const left = await identity()
+			.prepare(
+				"SELECT (SELECT COUNT(*) FROM \"user\" WHERE id = 'user-guest') AS users, (SELECT COUNT(*) FROM tenant_memberships WHERE tenant_id = 't-host') AS members"
+			)
+			.first<{ users: number; members: number }>();
+		expect(left).toEqual({ users: 0, members: 1 });
+		expect((await remove('user-host', 'host')).status).toBe(202);
+		expect(started).toEqual(['t-host']);
+	});
+
+	it('deletes the shown workspace by its name and keeps the last one', async () => {
+		started.length = 0;
+		await identity()
+			.prepare(
+				"INSERT INTO \"user\" (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('user-two', 'two', 'two@example.com', 1, 0, 0)"
+			)
+			.run();
+		for (const [id, name, now] of [
+			['t-alpha', 'Alpha', 1],
+			['t-beta', 'Beta', 2]
+		] as const)
+			await createTenant(identity(), {
+				id,
+				name,
+				ownerUserId: 'user-two',
+				analyticsShardId: 'analytics-1',
+				limits: { activeLinkLimit: 10, monthlyClickLimit: 10, retentionDays: 30, domainLimit: 1 },
+				now
+			});
+		const removeWorkspace = (confirmation: string, shown: string | null) =>
+			deleteWorkspace(
+				new Request(`${origin}/api/workspace/delete`, {
+					method: 'POST',
+					headers: {
+						origin,
+						'content-type': 'application/json',
+						...(shown ? { 'x-flared-workspace': shown } : {})
+					},
+					body: JSON.stringify({ confirmation })
+				}),
+				{
+					identity: identity(),
+					appOrigin: origin,
+					authenticate: async () => ({
+						kind: 'session',
+						sessionId: 'session-two',
+						userId: 'user-two',
+						signedInAt: fresh
+					}),
+					start: (tenantId) => started.push(tenantId),
+					edition
+				}
+			);
+		// The session shows Alpha, its oldest workspace. A tab that shows Beta, or names none,
+		// deletes nothing.
+		for (const shown of ['t-beta', null])
+			expect((await json(await removeWorkspace('Beta', shown))).error.code).toBe(
+				'WORKSPACE_CHANGED'
+			);
+		expect((await json(await removeWorkspace('two@example.com', 't-alpha'))).error).toMatchObject({
+			code: 'CONFIRMATION_MISMATCH'
+		});
+		refusal = true;
+		expect((await json(await removeWorkspace('alpha', 't-alpha'))).error.code).toBe(
+			'EDITION_REFUSED'
+		);
+		refusal = false;
+		expect((await removeWorkspace(' alpha ', 't-alpha')).status).toBe(202);
+		expect(started).toEqual(['t-alpha']);
+		expect(await listWorkspaces(identity(), 'user-two')).toMatchObject([
+			{ id: 't-alpha', status: 'deleting' },
+			{ id: 't-beta', status: 'pending' }
+		]);
+		// The session now shows Beta, which is the last workspace.
+		const last = await removeWorkspace('Beta', 't-beta');
+		expect(last.status).toBe(409);
+		expect((await json(last)).error.code).toBe('LAST_WORKSPACE');
+		expect(started).toEqual(['t-alpha']);
+	});
 });
 
 describe('discovery documents', () => {
@@ -468,6 +585,7 @@ describe('discovery documents', () => {
 describe('API authentication', () => {
 	const session = {
 		user: { id: 'user-1', email: 'a@example.com', name: 'a@example.com' },
+		sessionId: 'session-1',
 		expiresAt: 'x',
 		signedInAt: '2026-10-07T00:00:00.000Z'
 	};
@@ -482,6 +600,7 @@ describe('API authentication', () => {
 		expect(await sessionPrincipal(withCookie, auth, origin)).toEqual({
 			kind: 'session',
 			userId: 'user-1',
+			sessionId: 'session-1',
 			signedInAt: session.signedInAt
 		});
 		expect(await sessionPrincipal(new Request(`${origin}/v1/me`), auth, origin)).toBeNull();

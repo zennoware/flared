@@ -18,7 +18,7 @@ import { tokenScopes, type TokenScope } from './tokens';
 // Duplicated from the client's QR module, which this package cannot import.
 const qrSizes = { minimum: 128, maximum: 2048, default: 512 };
 
-export const openApiVersion = '1.0.0';
+export const openApiVersion = '1.2.0';
 
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 const dateTime = { type: 'string', format: 'date-time' };
@@ -155,6 +155,10 @@ const schemas = {
 		}
 	}),
 	Usage: object({
+		workspace: {
+			...object({ id: { type: 'string' }, name: { type: 'string' } }),
+			description: 'The workspace the usage belongs to.'
+		},
 		month: { type: 'string', pattern: '^\\d{4}-\\d{2}$' },
 		clicks: { ...count, description: 'Clicks recorded this UTC month.' },
 		clickLimit: { ...count, description: 'Clicks that can be recorded each UTC month.' },
@@ -250,15 +254,22 @@ const schemas = {
 		used: { ...count, description: 'Workspace domains that count against the limit.' },
 		limit: count
 	}),
+	Workspace: object({
+		id: { type: 'string' },
+		name: { type: 'string' },
+		role: { type: 'string', enum: ['owner', 'member'] }
+	}),
 	Identity: {
 		oneOf: [
 			object({
 				kind: { const: 'session' },
-				scopes: { type: 'array', items: ref('Scope') }
+				scopes: { type: 'array', items: ref('Scope') },
+				workspace: { ...ref('Workspace'), description: 'The workspace the session acts in.' }
 			}),
 			object({
 				kind: { const: 'token' },
 				scopes: { type: 'array', items: ref('Scope') },
+				workspace: { ...ref('Workspace'), description: 'The workspace the token acts in.' },
 				token: object({
 					id: { type: 'string' },
 					name: { type: 'string' },
@@ -293,7 +304,11 @@ function operation(
 ) {
 	return {
 		summary,
-		description: scope ? `Needs the \`${scope}\` scope.` : 'Needs no scope.',
+		description: !scope
+			? 'Needs no scope.'
+			: scope === 'domains:write'
+				? `Needs the \`${scope}\` scope and the workspace owner role.`
+				: `Needs the \`${scope}\` scope.`,
 		'x-required-scopes': scope ? [scope] : [],
 		...extra,
 		responses: { ...responses, default: errorResponse }
@@ -308,15 +323,18 @@ export function openApiDocument(serverUrl: string) {
 			title: 'Flared API',
 			version: openApiVersion,
 			description:
-				'Create and edit short links and read their click analytics. Authenticate with an API token from Settings in the Flared app: `Authorization: Bearer flr_…`. Each token works in one workspace and only for its scopes.',
+				'Create and edit short links and read their click analytics. Authenticate with an API token from Settings in the Flared app: `Authorization: Bearer flr_…`. Each token works in one workspace and only for its scopes. A token of a workspace member cannot use `domains:write`.',
 			license: { name: 'AGPL-3.0-only', identifier: 'AGPL-3.0-only' }
 		},
 		servers: [{ url: serverUrl }],
 		security: [{ bearerAuth: [] }],
 		paths: {
 			'/me': {
-				get: operation('Describe the calling token', null, {
-					'200': { description: 'The credential.', content: json(ref('Identity')) }
+				get: operation('Describe the calling token and its workspace', null, {
+					'200': {
+						description: 'The credential and the workspace it acts in.',
+						content: json(ref('Identity'))
+					}
 				})
 			},
 			'/links': {
@@ -337,6 +355,12 @@ export function openApiDocument(serverUrl: string) {
 								in: 'query',
 								description: 'Search slugs and titles.',
 								schema: { type: 'string', maxLength: 100 }
+							},
+							{
+								name: 'domain',
+								in: 'query',
+								description: 'Only links on this domain, by its ID from GET /v1/domains.',
+								schema: { type: 'string', maxLength: 64 }
 							}
 						]
 					}

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+import { isMemberPage, type MemberPage } from '@flared/contracts/members';
 import { isErrorCode } from '@flared/contracts/errors';
 import {
 	isUsage,
@@ -15,12 +16,19 @@ import {
 import { isApiTokenPage, type ApiTokenPage } from '@flared/contracts/tokens';
 import { isConnectedAppPage, type ConnectedAppPage } from '@flared/contracts/oauth';
 import { isDomainPage, type DomainPage } from '@flared/contracts/domains';
-import { isWorkspace, type Workspace } from '@flared/contracts/workspace';
+import {
+	isWorkspace,
+	isWorkspaceList,
+	workspaceField,
+	workspaceHeader,
+	type Workspace,
+	type WorkspaceList
+} from '@flared/contracts/workspace';
 import type { AuthService } from './forward';
 
 // The application side of the product API: typed reads and writes for server-rendered pages.
-// The API runs in the same Worker. Requests carry only the session cookie and, for writes, the
-// browser's own Origin, which the API checks again.
+// The API runs in the same Worker. Requests carry only the session cookie, the workspace the page
+// showed, and, for writes, the browser's own Origin, which the API checks again.
 export type ApiService = AuthService;
 
 export type ApiFailure = { code: string; message: string; status: number; field: string | null };
@@ -31,7 +39,7 @@ function apiRequest(path: string, init: { method: string; headers: Headers; body
 
 function forwardedHeaders(source: Headers, extra: Record<string, string> = {}): Headers {
 	const headers = new Headers(extra);
-	for (const name of ['cookie', 'origin']) {
+	for (const name of ['cookie', 'origin', workspaceHeader]) {
 		const value = source.get(name);
 		if (value !== null) headers.set(name, value);
 	}
@@ -70,9 +78,14 @@ function isLink(value: unknown): value is Link {
 export async function fetchLinks(
 	service: ApiService,
 	headers: Headers,
-	cursor: string | null
+	cursor: string | null,
+	filters: { search?: string | null; domainId?: string | null } = {}
 ): Promise<{ ok: true; page: LinkPage } | { ok: false; failure: ApiFailure }> {
-	const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	if (filters.search) params.set('q', filters.search);
+	if (filters.domainId) params.set('domain', filters.domainId);
+	const query = params.size ? `?${params}` : '';
 	const response = await service.fetch(
 		apiRequest(`/v1/links${query}`, { method: 'GET', headers: forwardedHeaders(headers) })
 	);
@@ -223,6 +236,49 @@ export async function fetchLink(
 		: { ok: false, failure: malformed };
 }
 
+// The fields of PATCH /v1/links/:id. An empty title clears it.
+export type LinkChange = { destination: string; title: string } | { enabled: boolean };
+
+// The change that LinkEditForm submits: intent "edit" with the fields, or "enable" or "disable".
+export function linkChangeOf(form: FormData): LinkChange | null {
+	const text = (name: string) => {
+		const value = form.get(name);
+		return typeof value === 'string' ? value : '';
+	};
+	switch (text('intent')) {
+		case 'edit':
+			return { destination: text('destination'), title: text('title') };
+		case 'enable':
+			return { enabled: true };
+		case 'disable':
+			return { enabled: false };
+		default:
+			return null;
+	}
+}
+
+export async function updateLink(
+	service: ApiService,
+	headers: Headers,
+	id: string,
+	change: LinkChange
+): Promise<{ ok: true; link: Link } | { ok: false; failure: ApiFailure }> {
+	const body =
+		'enabled' in change
+			? { enabled: change.enabled }
+			: { destination: change.destination, title: change.title || null };
+	const response = await service.fetch(
+		apiRequest(`/v1/links/${encodeURIComponent(id)}`, {
+			method: 'PATCH',
+			headers: forwardedHeaders(headers, { 'content-type': 'application/json' }),
+			body: JSON.stringify(body)
+		})
+	);
+	if (!response.ok) return { ok: false, failure: await failureOf(response) };
+	const link = fields(await response.json().catch(() => null)).link;
+	return isLink(link) ? { ok: true, link } : { ok: false, failure: malformed };
+}
+
 export async function fetchLinkAnalytics(
 	service: ApiService,
 	headers: Headers,
@@ -260,6 +316,26 @@ export async function fetchWorkspace(
 	return isWorkspace(workspace) ? { ok: true, workspace } : { ok: false, failure: malformed };
 }
 
+export async function fetchWorkspaces(
+	service: ApiService,
+	headers: Headers
+): Promise<{ ok: true; list: WorkspaceList } | { ok: false; failure: ApiFailure }> {
+	const result = await getJson(service, headers, '/v1/workspaces');
+	if (!result.ok) return result;
+	const list = { workspaces: result.body.workspaces, activeId: result.body.activeId };
+	return isWorkspaceList(list) ? { ok: true, list } : { ok: false, failure: malformed };
+}
+
+// The request headers of a form action, with the workspace that the form's page showed. A
+// form cannot send headers, so the page puts the ID in a field.
+export function withShownWorkspace(headers: Headers, form: FormData): Headers {
+	const shown = form.get(workspaceField);
+	if (typeof shown !== 'string' || !shown) return headers;
+	const result = new Headers(headers);
+	result.set(workspaceHeader, shown);
+	return result;
+}
+
 export async function fetchTokens(
 	service: ApiService,
 	headers: Headers
@@ -267,6 +343,17 @@ export async function fetchTokens(
 	const result = await getJson(service, headers, '/v1/tokens');
 	if (!result.ok) return result;
 	return isApiTokenPage(result.body)
+		? { ok: true, page: result.body }
+		: { ok: false, failure: malformed };
+}
+
+export async function fetchMembers(
+	service: ApiService,
+	headers: Headers
+): Promise<{ ok: true; page: MemberPage } | { ok: false; failure: ApiFailure }> {
+	const result = await getJson(service, headers, '/v1/members');
+	if (!result.ok) return result;
+	return isMemberPage(result.body)
 		? { ok: true, page: result.body }
 		: { ok: false, failure: malformed };
 }

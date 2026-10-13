@@ -1,7 +1,20 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script lang="ts">
-	import EmptyState from '../empty/EmptyState.svelte';
-	import type { Action } from 'svelte/action';
+	import { onMount, tick } from 'svelte';
+	import Glyph from '../icons/Glyph.svelte';
+	import Button from '../atoms/Button.svelte';
+	import Badge from '../atoms/Badge.svelte';
+	import StatusDot, { type StatusTone } from '../atoms/StatusDot.svelte';
+	import PageHeader from '../molecules/PageHeader.svelte';
+	import type { Crumb } from '../molecules/Breadcrumbs.svelte';
+	import SplitView from '../molecules/SplitView.svelte';
+	import SidePanel from '../molecules/SidePanel.svelte';
+	import Callout from '../molecules/Callout.svelte';
+	import Menu, { type MenuItem } from '../molecules/Menu.svelte';
+	import DomainAddForm from './DomainAddForm.svelte';
+	import { shownWorkspace } from '../workspace/shown';
+	import DomainSetup from './DomainSetup.svelte';
+	import DomainDetails from './DomainDetails.svelte';
 	import {
 		domainCheckIntervalMs,
 		normalizeHostname,
@@ -17,12 +30,33 @@
 		apiBase: string;
 		// Called after a change succeeds, so the app reloads the list.
 		onChanged: () => void | Promise<void>;
+		// Where the full setup steps are, such as the edition's docs page.
+		guideHref?: string;
+		// The breadcrumb above the page title.
+		crumbs?: Crumb[];
+		// The links page, and the links page filtered to one domain.
+		createHref?: string;
+		linksHref?: (domain: Domain) => string;
+		// Only the owner adds, checks, and removes domains; a member sees them.
+		manage?: boolean;
 	}
 
-	let { page, apiBase, onChanged }: Props = $props();
+	let {
+		page,
+		apiBase,
+		onChanged,
+		guideHref,
+		crumbs,
+		createHref,
+		linksHref,
+		manage = true
+	}: Props = $props();
+	const workspace = shownWorkspace();
 
 	let hostname = $state('');
+	let hostnameInput = $state<HTMLInputElement>();
 	let fieldError = $state('');
+	let adding = $state(false);
 	// "add", "check:<id>", or "remove:<id>" while a request runs.
 	let pending = $state<string | null>(null);
 	let status = $state('');
@@ -31,6 +65,7 @@
 	// When each domain can be checked again, in epoch milliseconds. The API allows one check a
 	// minute per domain, so the button counts down instead of failing.
 	let cooldowns = $state<Record<string, number>>({});
+	let lastChecks = $state<Record<string, { at: number; state: Domain['state'] }>>({});
 	let now = $state(Date.now());
 
 	$effect(() => {
@@ -53,12 +88,55 @@
 		cooldowns = { ...cooldowns, [domainId]: now + seconds * 1000 };
 	}
 
-	const dates = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 	const numbers = new Intl.NumberFormat();
 	const atLimit = $derived(page.used >= page.limit);
 	const nearLimit = $derived(!atLimit && page.limit > 0 && page.used / page.limit >= 0.8);
 	const workspaceDomains = $derived(page.domains.filter((domain) => domain.kind === 'workspace'));
 	const platformDomains = $derived(page.domains.filter((domain) => domain.kind === 'platform'));
+	const unfinished = (domain: Domain) =>
+		domain.kind === 'workspace' && domain.state !== 'active' && domain.state !== 'disabled';
+	const ready = (domain: Domain) => domain.kind === 'platform' || domain.state === 'active';
+	const readyHost = $derived(
+		(platformDomains.find((domain) => domain.isDefault) ?? platformDomains[0])?.hostname ?? null
+	);
+
+	// The setup view opens on its own while a domain waits and none is active yet. Undefined
+	// means no choice yet; null means the list.
+	let setupChoice = $state<string | null | undefined>(undefined);
+	const setupDomain = $derived.by(() => {
+		if (setupChoice === null) return null;
+		if (setupChoice !== undefined)
+			return (
+				workspaceDomains.find((domain) => domain.id === setupChoice && unfinished(domain)) ?? null
+			);
+		return workspaceDomains.some((domain) => domain.state === 'active')
+			? null
+			: (workspaceDomains.find(unfinished) ?? null);
+	});
+	const empty = $derived(workspaceDomains.length === 0);
+
+	let selectedId = $state<string | null>(null);
+	const selected = $derived(
+		setupDomain
+			? null
+			: (page.domains.find((domain) => domain.id === selectedId && ready(domain)) ?? null)
+	);
+
+	// With room for two columns, the first active domain opens in the panel, as in the mockups.
+	onMount(() => {
+		if (empty || !window.matchMedia('(min-width: 75rem)').matches) return;
+		const first =
+			workspaceDomains.find((domain) => domain.state === 'active') ?? platformDomains[0];
+		if (first) selectedId = first.id;
+	});
+
+	const lead = $derived(
+		setupDomain
+			? 'Finish connecting your subdomain.'
+			: empty
+				? 'Use a familiar address for every link.'
+				: 'Your addresses, ready to share.'
+	);
 
 	const stateLabels: Record<Domain['state'], string> = {
 		pending: 'Waiting for DNS',
@@ -67,15 +145,32 @@
 		failed: 'Failed',
 		disabled: 'Removed'
 	};
-
-	const focusOnMount: Action<HTMLElement> = (node) => {
-		node.focus();
+	const stateTones: Record<Domain['state'], StatusTone> = {
+		pending: 'warning',
+		verifying: 'warning',
+		active: 'live',
+		failed: 'danger',
+		disabled: 'neutral'
 	};
+
+	function stateLabel(domain: Domain): string {
+		if (domain.kind === 'platform') return 'Ready';
+		return domain.state === 'pending' && domain.setup === 'worker_custom_domain'
+			? 'Waiting for setup'
+			: stateLabels[domain.state];
+	}
 
 	function begin(action: string) {
 		pending = action;
 		error = '';
 		status = '';
+	}
+
+	async function openAdd() {
+		setupChoice = null;
+		adding = true;
+		await tick();
+		hostnameInput?.focus();
 	}
 
 	async function add() {
@@ -92,7 +187,7 @@
 		}
 		begin('add');
 		try {
-			const result = await addDomain(apiBase, normalized);
+			const result = await addDomain(apiBase, normalized, workspace());
 			if (!result.ok) {
 				if (result.failure.field === 'hostname' || result.failure.code === 'DOMAIN_TAKEN')
 					fieldError = domainErrorMessage(result.failure);
@@ -100,7 +195,9 @@
 				return;
 			}
 			hostname = '';
+			adding = false;
 			await onChanged();
+			setupChoice = result.value.state === 'active' ? null : result.value.id;
 			status =
 				result.value.setup === 'worker_custom_domain'
 					? `Added ${result.value.hostname}. Follow the steps shown below.`
@@ -113,7 +210,7 @@
 	async function check(domain: Domain) {
 		begin(`check:${domain.id}`);
 		try {
-			const result = await checkDomain(apiBase, domain.id);
+			const result = await checkDomain(apiBase, domain.id, workspace());
 			if (!result.ok) {
 				if (result.failure.code === 'DOMAIN_CHECK_TOO_SOON')
 					coolDown(domain.id, result.failure.retryAfterSeconds ?? domainCheckIntervalMs / 1000);
@@ -121,7 +218,12 @@
 				return;
 			}
 			coolDown(domain.id, domainCheckIntervalMs / 1000);
+			lastChecks = { ...lastChecks, [domain.id]: { at: Date.now(), state: result.value.state } };
 			await onChanged();
+			if (result.value.state === 'active') {
+				setupChoice = null;
+				selectedId = domain.id;
+			}
 			status =
 				result.value.state === 'active'
 					? `${domain.hostname} is active.`
@@ -134,25 +236,18 @@
 	async function remove(domain: Domain) {
 		begin(`remove:${domain.id}`);
 		try {
-			const result = await removeDomain(apiBase, domain.id);
+			const result = await removeDomain(apiBase, domain.id, workspace());
 			confirmingId = null;
 			if (!result.ok && result.failure.code !== 'NOT_FOUND') {
 				error = domainErrorMessage(result.failure);
 				return;
 			}
 			await onChanged();
+			setupChoice = null;
+			selectedId = null;
 			status = `Removed ${domain.hostname}.`;
 		} finally {
 			pending = null;
-		}
-	}
-
-	async function copy(value: string, label: string) {
-		try {
-			await navigator.clipboard.writeText(value);
-			status = `${label} copied.`;
-		} catch {
-			status = `Select the ${label.toLowerCase()} and copy it.`;
 		}
 	}
 
@@ -162,511 +257,603 @@
 			? '1 active link on this domain will stop working.'
 			: `${numbers.format(count)} active links on this domain will stop working.`;
 	}
+
+	function open(domain: Domain) {
+		confirmingId = null;
+		if (unfinished(domain)) {
+			setupChoice = domain.id;
+			return;
+		}
+		if (ready(domain)) selectedId = selectedId === domain.id ? null : domain.id;
+	}
+
+	function askRemove(domain: Domain) {
+		if (unfinished(domain)) setupChoice = domain.id;
+		else selectedId = domain.id;
+		confirmingId = domain.id;
+	}
+
+	function actions(domain: Domain): MenuItem[] {
+		const items: MenuItem[] = [];
+		if (unfinished(domain))
+			items.push({ label: 'Finish setup', icon: 'arrow', onselect: () => open(domain) });
+		else if (ready(domain))
+			items.push({ label: 'Show details', icon: 'info', onselect: () => (selectedId = domain.id) });
+		if (linksHref && ready(domain))
+			items.push({ label: 'View links', icon: 'link', href: linksHref(domain) });
+		if (manage && domain.kind === 'workspace' && domain.state !== 'disabled')
+			items.push({
+				label: 'Remove domain',
+				icon: 'trash',
+				danger: true,
+				onselect: () => askRemove(domain)
+			});
+		return items;
+	}
 </script>
 
-<section class="domains" aria-labelledby="domains-heading" aria-busy={pending !== null}>
-	<h2 id="domains-heading">Custom domains</h2>
-	<p class="lead">
-		Use your own subdomain for short links. Links on a custom domain work after the domain is
-		active.
-	</p>
-	<p class="usage" class:warn={atLimit || nearLimit}>
+{#snippet usage()}
+	<span class="usage" class:warn={atLimit || nearLimit}>
 		{#if page.limit === 0}Custom domains are not available in this workspace.{:else}{numbers.format(
 				page.used
-			)} of {numbers.format(page.limit)} custom domains used{#if atLimit}. You have used all your
-				custom domains.{:else if nearLimit}. You are close to your custom domain limit.{/if}{/if}
-	</p>
-	<p class="status" role="status" aria-live="polite">{status}</p>
-	{#if error}<p class="error" role="alert">{error}</p>{/if}
+			)} of {numbers.format(page.limit)} custom domains used{/if}
+	</span>
+{/snippet}
 
-	{#if workspaceDomains.length === 0}
-		<EmptyState>No custom domains yet.</EmptyState>
-	{:else}
-		<ul aria-label="Your custom domains">
-			{#each workspaceDomains as domain (domain.id)}
-				<li>
-					<div class="head">
-						<span class="tile" aria-hidden="true"
-							><svg viewBox="0 0 24 24"
-								><circle cx="12" cy="12" r="9" /><path
-									d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"
-								/></svg
-							></span
+{#snippet readyBar()}
+	{#if readyHost}
+		<div class="ready-bar">
+			<Glyph name="globe" size={22} />
+			<p><strong>{readyHost}</strong> is ready to use while you finish setup.</p>
+			{#if createHref}<a class="text-action" href={createHref}
+					>Create a link<Glyph name="arrow" size={16} /></a
+				>{/if}
+		</div>
+	{/if}
+{/snippet}
+
+<!-- The panel is passed only while a domain is open, so the list keeps the full width. -->
+{#snippet details()}
+	{#if selected}
+		{@const domain = selected}
+		<SidePanel id="domain-details-label" label="Domain details" onclose={() => (selectedId = null)}>
+			<DomainDetails
+				{domain}
+				{createHref}
+				linksHref={linksHref?.(domain)}
+				confirming={confirmingId === domain.id}
+				removing={pending === `remove:${domain.id}`}
+				busy={pending !== null}
+				stopping={stopping(domain.activeLinks)}
+				onremove={manage ? () => (confirmingId = domain.id) : undefined}
+				onconfirm={() => void remove(domain)}
+				oncancel={() => (confirmingId = null)}
+			/>
+		</SidePanel>
+	{/if}
+{/snippet}
+
+<SplitView panel={selected ? details : undefined}>
+	<PageHeader {crumbs} title="Domains" {lead}>
+		{#snippet aside()}
+			{#if !empty && !setupDomain}
+				<div class="aside">
+					{@render usage()}
+					{#if manage && !adding && page.limit > 0}
+						<Button
+							variant="primary"
+							icon="plus"
+							disabled={atLimit || pending !== null}
+							onclick={() => void openAdd()}>Add domain</Button
 						>
-						<span class="name">{domain.hostname}</span>
-						<span class="badge {domain.state}"
-							>{domain.state === 'pending' && domain.setup === 'worker_custom_domain'
-								? 'Waiting for setup'
-								: stateLabels[domain.state]}</span
+					{/if}
+				</div>
+			{:else}
+				{@render usage()}
+			{/if}
+		{/snippet}
+	</PageHeader>
+
+	<div class="domains" aria-busy={pending !== null}>
+		<p class="visually-hidden" role="status" aria-live="polite">{status}</p>
+		{#if error}<Callout tone="danger" role="alert"><p>{error}</p></Callout>{/if}
+
+		{#if setupDomain}
+			{@const domain = setupDomain}
+			<button type="button" class="back" onclick={() => (setupChoice = null)}
+				><Glyph name="arrowLeft" size={18} />All domains</button
+			>
+			<DomainSetup
+				{domain}
+				lastCheck={lastChecks[domain.id] ?? null}
+				checking={pending === `check:${domain.id}`}
+				wait={secondsLeft(domain.id)}
+				busy={pending !== null}
+				{guideHref}
+				oncheck={manage ? () => void check(domain) : undefined}
+				onremove={manage ? () => (confirmingId = domain.id) : undefined}
+			/>
+			{#if confirmingId === domain.id}
+				<div class="confirm" role="alertdialog" aria-labelledby="confirm-{domain.id}">
+					<p id="confirm-{domain.id}">
+						<strong>Remove {domain.hostname}?</strong>
+						{stopping(domain.activeLinks)}
+					</p>
+					<div class="confirm-actions">
+						<Button size="sm" disabled={pending !== null} onclick={() => (confirmingId = null)}
+							>Keep</Button
+						>
+						<Button
+							size="sm"
+							variant="danger"
+							disabled={pending !== null}
+							onclick={() => void remove(domain)}
+							>{pending === `remove:${domain.id}` ? 'Removing…' : 'Remove'}</Button
 						>
 					</div>
-					{#if domain.error}<p class="error">{domain.error.message}</p>{/if}
-					{#if domain.state === 'active'}
-						<p class="meta">
-							{#if domain.activatedAt}Active since <time datetime={domain.activatedAt}
-									>{dates.format(new Date(domain.activatedAt))}</time
-								>.
-							{/if}{domain.setup === 'worker_custom_domain'
-								? 'Keep the Custom Domain in place so your links keep working.'
-								: 'Keep the DNS record in place so your links keep working.'}
-						</p>
-					{:else if domain.setup === 'worker_custom_domain'}
-						<ol class="meta steps">
+				</div>
+			{/if}
+			{@render readyBar()}
+		{:else if empty}
+			<section class="hero" aria-labelledby="domain-hero-heading">
+				<span class="hero-mark" aria-hidden="true"
+					><Glyph name="globe" size={64} /><span class="badge-link"
+						><Glyph name="link" size={16} /></span
+					></span
+				>
+				<h2 id="domain-hero-heading">Your links. Your domain.</h2>
+				{#if page.limit > 0 && !manage}
+					<p class="hero-lead">Only the workspace owner can add a domain.</p>
+				{:else if page.limit > 0}
+					<p class="hero-lead">Add a subdomain you own, such as go.yourbrand.com.</p>
+					<DomainAddForm
+						bind:hostname
+						bind:input={hostnameInput}
+						error={fieldError}
+						pending={pending === 'add'}
+						disabled={atLimit || pending !== null}
+						onsubmit={() => void add()}
+						centered
+					/>
+					{#if guideHref}<a class="guide" href={guideHref}
+							>How setup works<Glyph name="arrowUpRight" size={16} /></a
+						>{/if}
+				{:else}
+					<p class="hero-lead">Custom domains are not available in this workspace.</p>
+				{/if}
+			</section>
+			{#if platformDomains.length > 0}
+				<section class="available" aria-labelledby="available-heading">
+					<h2 id="available-heading" class="small-heading">Already available</h2>
+					<ul>
+						{#each platformDomains as domain (domain.id)}
 							<li>
-								In the Cloudflare dashboard, open <strong>Workers &amp; Pages</strong> and select this
-								Flared Worker.
+								<Glyph name="link" size={26} />
+								<div class="available-main">
+									<p class="available-name">
+										<strong>{domain.hostname}</strong><Badge outlined>Included</Badge><StatusDot
+											>Ready to use</StatusDot
+										>
+									</p>
+									<p class="sub">Create links now. No domain setup needed.</p>
+								</div>
+								{#if createHref}<a class="text-action" href={createHref}
+										>Create a link<Glyph name="arrow" size={16} /></a
+									>{/if}
 							</li>
-							<li>
-								Open <strong>Settings → Domains &amp; Routes</strong>, choose <strong>Add</strong>,
-								then
-								<strong>Custom domain</strong>.
-							</li>
-							<li>
-								<span class="cell"
-									>Enter <code>{domain.hostname}</code>
-									<button
-										type="button"
-										class="copy"
-										aria-label={`Copy ${domain.hostname}`}
-										onclick={() => void copy(domain.hostname, 'Hostname')}>Copy</button
-									></span
-								>
-							</li>
-						</ol>
-						<p class="meta">
-							The domain must be on Cloudflare in the same account as this Worker. Checks run
-							automatically every 10 minutes; Cloudflare usually issues the certificate within a few
-							minutes.
-						</p>
-					{:else}
-						<p class="meta">
-							At your DNS provider, add the CNAME record below. If your DNS is on Cloudflare, set
-							the proxy status to DNS only.
-						</p>
-						<p class="meta">
-							Checks run automatically; the certificate is usually ready within an hour.
+						{/each}
+					</ul>
+					{#if page.limit > 0}
+						<p class="included">
+							<Glyph name="check" size={18} />{page.limit === 1
+								? 'One custom domain is included in your plan.'
+								: `${numbers.format(page.limit)} custom domains are included in your plan.`}
 						</p>
 					{/if}
-					{#if domain.records.length > 0}
-						<table>
-							<caption class="visually-hidden">DNS record for {domain.hostname}</caption>
-							<thead>
-								<tr
-									><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Target</th></tr
-								>
-							</thead>
-							<tbody>
-								{#each domain.records as dnsRecord (`${dnsRecord.type}:${dnsRecord.name}`)}
-									<tr>
-										<td data-label="Type"><code>{dnsRecord.type}</code></td>
-										<td data-label="Name">
-											<span class="cell">
-												<code>{dnsRecord.name}</code>
-												<button
-													type="button"
-													class="copy"
-													aria-label={`Copy name for ${domain.hostname}`}
-													onclick={() => void copy(dnsRecord.name, 'Name')}>Copy</button
-												>
-											</span>
-										</td>
-										<td data-label="Target">
-											<span class="cell">
-												<code>{dnsRecord.value}</code>
-												<button
-													type="button"
-													class="copy"
-													aria-label={`Copy target for ${domain.hostname}`}
-													onclick={() => void copy(dnsRecord.value, 'Target')}>Copy</button
-												>
-											</span>
-										</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					{/if}
-					<div class="actions">
-						{#if confirmingId === domain.id}
-							<p class="confirm">
-								Remove {domain.hostname}? {stopping(domain.activeLinks)}
-							</p>
-							<button
-								type="button"
-								class="danger"
-								disabled={pending !== null}
-								onclick={() => void remove(domain)}
-								>{pending === `remove:${domain.id}` ? 'Removing…' : 'Remove'}</button
-							>
-							<button
-								type="button"
-								use:focusOnMount
-								disabled={pending !== null}
-								onclick={() => (confirmingId = null)}>Keep</button
-							>
-						{:else}
-							{#if domain.state !== 'active'}
-								{@const wait = secondsLeft(domain.id)}
+				</section>
+			{/if}
+		{:else}
+			{#if manage && adding && !atLimit}
+				<section class="add-card" aria-labelledby="domain-add-heading">
+					<h2 id="domain-add-heading" class="small-heading">Add a custom domain</h2>
+					<DomainAddForm
+						bind:hostname
+						bind:input={hostnameInput}
+						error={fieldError}
+						pending={pending === 'add'}
+						disabled={pending !== null}
+						onsubmit={() => void add()}
+						oncancel={() => {
+							adding = false;
+							fieldError = '';
+						}}
+					/>
+				</section>
+			{/if}
+			<div class="table">
+				<div class="columns" aria-hidden="true">
+					<span>Domain</span><span>Status</span><span>Links</span><span></span>
+				</div>
+				<ul aria-label="Domains">
+					{#each [...workspaceDomains, ...platformDomains] as domain (domain.id)}
+						<!-- The name button is the keyboard path; the row click is a larger target. -->
+						<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+						<li
+							class="row"
+							class:selected={selected?.id === domain.id}
+							onclick={(event) => {
+								if (!(event.target as HTMLElement).closest('a, button, [popover]')) open(domain);
+							}}
+						>
+							<span class="cell name">
+								<Glyph name={domain.kind === 'platform' ? 'link' : 'globe'} size={22} />
 								<button
 									type="button"
-									disabled={pending !== null || wait > 0}
-									aria-label={wait > 0
-										? `Check ${domain.hostname} again in ${wait} seconds`
-										: `Check ${domain.hostname} now`}
-									onclick={() => void check(domain)}
-									>{pending === `check:${domain.id}`
-										? 'Checking…'
-										: wait > 0
-											? `Check again in ${wait}s`
-											: 'Check now'}</button
+									class="hostname"
+									aria-expanded={ready(domain) ? selected?.id === domain.id : undefined}
+									onclick={() => open(domain)}>{domain.hostname}</button
 								>
-							{/if}
-							<button
-								type="button"
-								disabled={pending !== null}
-								aria-label={`Remove ${domain.hostname}`}
-								onclick={() => (confirmingId = domain.id)}>Remove</button
+								{#if domain.isDefault}<Badge>Default</Badge>{/if}
+								{#if domain.kind === 'platform'}<span class="included-badge"
+										><Badge>Included</Badge></span
+									>{/if}
+							</span>
+							<span class="cell">
+								<StatusDot tone={domain.kind === 'platform' ? 'live' : stateTones[domain.state]}
+									>{stateLabel(domain)}</StatusDot
+								>
+							</span>
+							<span class="cell count"
+								>{domain.activeLinks === null ? '–' : numbers.format(domain.activeLinks)}</span
 							>
-						{/if}
-					</div>
-				</li>
-			{/each}
-		</ul>
-	{/if}
-
-	{#if atLimit && page.limit > 0}
-		<p class="empty">To add another domain, remove one first.</p>
-	{:else if !atLimit}
-		<form
-			class="add"
-			novalidate
-			onsubmit={(event) => {
-				event.preventDefault();
-				void add();
-			}}
-		>
-			<h3>Add a domain</h3>
-			<div class="field">
-				<label for="domain-hostname">Hostname</label>
-				<input
-					id="domain-hostname"
-					bind:value={hostname}
-					type="text"
-					inputmode="url"
-					autocomplete="off"
-					autocapitalize="none"
-					spellcheck="false"
-					maxlength="253"
-					placeholder="go.example.com"
-					required
-					aria-invalid={fieldError ? true : undefined}
-					aria-describedby={fieldError
-						? 'domain-hostname-error domain-hostname-hint'
-						: 'domain-hostname-hint'}
-				/>
-				<p id="domain-hostname-hint" class="hint">A subdomain such as go.example.com</p>
-				{#if fieldError}<p id="domain-hostname-error" class="error" role="alert">
-						{fieldError}
-					</p>{/if}
+							<span class="cell">
+								{#if actions(domain).length > 0}
+									<Menu
+										id="domain-menu-{domain.id}"
+										label="More actions for {domain.hostname}"
+										items={actions(domain)}
+									/>
+								{/if}
+							</span>
+						</li>
+					{/each}
+				</ul>
 			</div>
-			<button type="submit" class="primary" disabled={pending !== null}
-				>{pending === 'add' ? 'Adding…' : 'Add domain'}</button
-			>
-		</form>
-	{/if}
-
-	{#if platformDomains.length > 0}
-		<h3>Included domains</h3>
-		<ul aria-label="Included domains">
-			{#each platformDomains as domain (domain.id)}
-				<li>
-					<div class="head">
-						<span class="tile" aria-hidden="true"
-							><svg viewBox="0 0 24 24"
-								><circle cx="12" cy="12" r="9" /><path
-									d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"
-								/></svg
-							></span
-						>
-						<span class="name">{domain.hostname}</span>
-						<span class="badge active">{domain.isDefault ? 'Default' : 'Active'}</span>
-					</div>
-					<p class="meta">Every workspace can use this domain. It needs no setup.</p>
-				</li>
-			{/each}
-		</ul>
-	{/if}
-</section>
+			<div class="foot">
+				<p>The default domain is preselected when you create a link.</p>
+				{#if createHref}<a class="text-action" href={createHref}
+						>View all links<Glyph name="arrow" size={16} /></a
+					>{/if}
+			</div>
+			{#if !manage}
+				<p class="note">Only the workspace owner can add or remove domains.</p>
+			{:else if atLimit && page.limit > 0}
+				<p class="note">You have used all your custom domains. To add another, remove one first.</p>
+			{:else if nearLimit}
+				<p class="note">You are close to your custom domain limit.</p>
+			{/if}
+		{/if}
+	</div>
+</SplitView>
 
 <style>
 	.domains {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1.5rem;
 	}
-	h2 {
-		font-size: 1.05rem;
-	}
-	h3 {
-		margin-top: 0.5rem;
-		font-size: 0.95rem;
-	}
-	.lead,
-	.status,
-	.empty,
-	.meta,
-	.hint,
-	.usage {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
-	}
-	.usage {
-		font-variant-numeric: tabular-nums;
-	}
-	.steps {
-		display: grid;
-		gap: 0.35rem;
-		margin: 0;
-		padding-left: 1.25rem;
-	}
-	.usage.warn {
-		color: var(--color-strong, #101828);
-		font-weight: 600;
-	}
-	.status:empty {
-		display: none;
-	}
-	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
-	}
-	ul {
-		display: grid;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-paper, #fff);
-	}
-	li {
-		display: grid;
-		gap: 0.6rem;
-		min-width: 0;
-		padding: 1rem;
-	}
-	li + li {
-		border-top: 1px solid var(--color-rule, #d0d5dd);
-	}
-	.head {
+	.aside {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem 0.75rem;
+		gap: 1rem 1.5rem;
 	}
-	.name {
-		color: var(--color-strong, #101828);
-		font-weight: 650;
-		overflow-wrap: anywhere;
+	.usage {
+		color: var(--color-lead);
+		font-size: 0.9375rem;
 	}
-	.tile {
+	.usage.warn {
+		color: var(--color-warning);
+	}
+	.back {
+		display: inline-flex;
+		align-items: center;
+		justify-self: start;
+		gap: 0.5rem;
+		margin-top: -0.75rem;
+		padding: 0.25rem 0;
+		border: 0;
+		background: none;
+		color: var(--color-link);
+		font: inherit;
+		font-size: 0.9375rem;
+		cursor: pointer;
+	}
+	.back:hover,
+	.text-action:hover {
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.hero {
 		display: grid;
-		flex: none;
+		justify-items: center;
+		gap: 0.85rem;
+		padding: 0.5rem 0 1rem;
+		text-align: center;
+	}
+	.hero-mark {
+		position: relative;
+		color: var(--color-strong);
+	}
+	.badge-link {
+		position: absolute;
+		right: -0.35rem;
+		bottom: -0.1rem;
+		display: grid;
 		place-items: center;
-		width: 2.25rem;
-		height: 2.25rem;
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-tile-teal-soft, #f0fdfa);
-		color: var(--color-tile-teal, #0f766e);
+		width: 1.85rem;
+		height: 1.85rem;
+		border: 2px solid var(--color-paper);
+		border-radius: 50%;
+		background: var(--color-accent);
+		color: #fff;
 	}
-	.tile svg {
-		width: 1.25rem;
-		height: 1.25rem;
-		fill: none;
-		stroke: currentColor;
-		stroke-width: 1.6;
+	.hero h2 {
+		color: var(--color-strong);
+		font-size: clamp(1.75rem, 2.6vw, 2.25rem);
+		font-weight: 800;
+		letter-spacing: -0.045em;
 	}
-	/* Each state has a colour and its name, so colour is never the only signal. */
-	.badge {
+	.hero-lead {
+		margin-bottom: 0.5rem;
+		color: var(--color-ink);
+		font-size: 1.0625rem;
+	}
+	.guide {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.35rem;
-		padding: 0.1rem 0.55rem;
-		border-radius: 999px;
-		background: var(--color-surface, #f9fafb);
-		color: var(--color-muted, #667085);
-		box-shadow: inset 0 0 0 1px var(--color-rule, #d0d5dd);
+		color: var(--color-link);
+		font-size: 0.9375rem;
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.small-heading {
+		color: var(--color-lead);
+		font-size: 0.9375rem;
+		font-weight: 500;
+		letter-spacing: 0;
+	}
+	.available {
+		display: grid;
+		gap: 0.75rem;
+		padding-top: 1.5rem;
+		border-top: 1px solid var(--color-rule);
+	}
+	.available ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.available li {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 1rem;
+		padding: 0.75rem 0;
+		border-bottom: 1px solid var(--color-rule);
+		color: var(--color-strong);
+	}
+	.available-main {
+		display: grid;
+		gap: 0.2rem;
+		min-width: 0;
+	}
+	.available-name {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem 1rem;
+		color: var(--color-strong);
+		font-size: 1.0625rem;
+	}
+	.sub,
+	.note,
+	.foot p {
+		color: var(--color-lead);
+		font-size: 0.875rem;
+	}
+	.included {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		color: var(--color-ink);
+		font-size: 0.9375rem;
+	}
+	.text-action {
+		display: inline-flex;
+		flex: none;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--color-link);
+		font-size: 0.9375rem;
+	}
+	.add-card {
+		display: grid;
+		gap: 0.75rem;
+		padding: 1.25rem 1.5rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-paper);
+	}
+	.table {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-paper);
+		overflow: hidden;
+		container-type: inline-size;
+	}
+	.columns,
+	.row {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 10rem 5rem 3rem;
+		align-items: center;
+	}
+	.columns {
+		min-height: 2.75rem;
+		background: var(--color-canvas);
+		border-bottom: 1px solid var(--color-rule);
+		color: var(--color-lead);
 		font-size: 0.75rem;
 		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
-	.badge::before {
-		width: 0.45rem;
-		height: 0.45rem;
-		border-radius: 50%;
-		background: currentColor;
+	.columns > span {
+		padding: 0 1rem;
+	}
+	.columns > span + span:not(:last-child) {
+		align-self: stretch;
+		display: flex;
+		align-items: center;
+		border-left: 1px solid var(--color-rule);
+	}
+	.row {
+		position: relative;
+		min-height: 3.6rem;
+		cursor: pointer;
+	}
+	.table ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.row + .row {
+		border-top: 1px solid var(--color-rule);
+	}
+	.row:hover {
+		background: var(--color-hover);
+	}
+	.row.selected {
+		background: var(--color-accent-soft);
+	}
+	.row.selected::before {
 		content: '';
-	}
-	.badge.active {
-		background: var(--color-positive-soft, #ecfdf3);
-		color: var(--color-positive, #067647);
-		box-shadow: none;
-	}
-	.badge.pending,
-	.badge.verifying {
-		background: var(--color-warning-soft, #fffaeb);
-		color: var(--color-warning, #b54708);
-		box-shadow: none;
-	}
-	.badge.failed {
-		background: var(--color-danger-soft, #fef3f2);
-		color: var(--color-danger, #b42318);
-		box-shadow: none;
-	}
-	table {
-		width: 100%;
-		border-collapse: collapse;
-		table-layout: fixed;
-		font-size: 0.85rem;
-	}
-	th {
-		padding: 0.4rem 0.5rem;
-		color: var(--color-muted, #667085);
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-align: left;
-	}
-	th:first-child {
-		width: 5rem;
-	}
-	td {
-		padding: 0.5rem;
-		border-top: 1px solid var(--color-rule, #d0d5dd);
-		vertical-align: middle;
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 0;
+		width: 3px;
+		background: var(--color-accent);
 	}
 	.cell {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
-	}
-	code {
+		gap: 0.75rem;
 		min-width: 0;
-		color: var(--color-ink, #101828);
-		font-family: var(--font-mono, ui-monospace, monospace);
-		font-size: 0.8rem;
-		overflow-wrap: anywhere;
+		align-self: stretch;
+		padding: 0 1rem;
+		color: var(--color-strong);
 	}
-	.actions {
+	.cell + .cell:not(:last-child) {
+		border-left: 1px solid var(--color-rule);
+	}
+	.name {
+		padding-left: 1.25rem;
+	}
+	.hostname {
+		overflow: hidden;
+		padding: 0;
+		border: 0;
+		background: none;
+		color: var(--color-strong);
+		font: inherit;
+		font-size: 1rem;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		cursor: pointer;
+	}
+	.hostname:hover {
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.count {
+		font-variant-numeric: tabular-nums;
+	}
+	.foot {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
+		justify-content: space-between;
+		gap: 0.5rem 1rem;
+		margin-top: -0.75rem;
 	}
 	.confirm {
-		flex-basis: 100%;
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
-	}
-	.add {
 		display: grid;
 		gap: 0.75rem;
-		max-width: 28rem;
-		margin-top: 0.5rem;
+		width: min(100%, 40rem);
+		margin-inline: auto;
+		padding: 0.9rem 1rem;
+		border: 1px solid color-mix(in oklch, var(--color-danger) 30%, transparent);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-danger-soft);
+		font-size: 0.9375rem;
 	}
-	.field {
+	.confirm p {
+		color: var(--color-ink);
+	}
+	.confirm-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.5rem;
+	}
+	.ready-bar {
 		display: grid;
-		gap: 0.4rem;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 1rem;
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--color-rule);
+		color: var(--color-strong);
 	}
-	label {
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
-		font-weight: 650;
+	.ready-bar p {
+		color: var(--color-ink);
+		font-size: 0.9375rem;
 	}
-	input {
-		width: 100%;
-		min-width: 0;
-		min-height: 44px;
-		padding: 0.6rem 0.8rem;
-		color: var(--color-ink, #101828);
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
-	}
-	input:focus-visible {
-		border-color: var(--color-muted, #667085);
-		outline: 1px solid var(--color-muted, #667085);
-		outline-offset: -1px;
-	}
-	input[aria-invalid='true'] {
-		border-color: var(--color-danger, #b42318);
-	}
-	button {
-		min-height: 44px;
-		padding: 0.4rem 0.9rem;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
-		color: var(--color-ink, #101828);
-		font-size: 0.8rem;
-		font-weight: 600;
-	}
-	button:hover:not(:disabled) {
-		border-color: var(--color-muted, #667085);
-	}
-	button.primary {
-		justify-self: start;
-		padding: 0.65rem 1.15rem;
-		border-color: var(--color-button-primary, #101828);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-size: inherit;
-		font-weight: 620;
-	}
-	button.primary:hover:not(:disabled) {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	button.danger,
-	button.danger:hover:not(:disabled) {
-		border-color: var(--color-button-danger, #b42318);
-		background: var(--color-button-danger, #b42318);
-		color: var(--color-on-primary, #fff);
-	}
-	button:disabled {
-		color: var(--color-muted, #667085);
-		background: var(--color-disabled, #eaecf0);
-		border-color: var(--color-disabled, #eaecf0);
+	.ready-bar strong {
+		color: var(--color-strong);
 	}
 	.visually-hidden {
 		position: absolute;
 		width: 1px;
 		height: 1px;
 		overflow: hidden;
-		clip: rect(0 0 0 0);
+		clip-path: inset(50%);
 		white-space: nowrap;
 	}
-	@media (max-width: 40rem) {
-		thead {
-			position: absolute;
-			width: 1px;
-			height: 1px;
-			overflow: hidden;
-			clip: rect(0 0 0 0);
+	@container (max-width: 34rem) {
+		.columns {
+			display: none;
 		}
-		tr,
-		td {
-			display: block;
+		.row {
+			grid-template-columns: minmax(0, 1fr) auto 2.75rem;
+			padding: 0.5rem 0;
 		}
-		td::before {
-			content: attr(data-label);
-			display: block;
-			margin-bottom: 0.2rem;
-			color: var(--color-muted, #667085);
-			font-size: 0.75rem;
-			font-weight: 600;
+		.cell + .cell:not(:last-child) {
+			border-left: 0;
 		}
-		button.primary {
-			justify-self: stretch;
+		.included-badge {
+			display: none;
+		}
+		.count {
+			display: none;
+		}
+		.cell {
+			padding: 0 0.5rem;
+		}
+		.name {
+			gap: 0.6rem;
+			padding-left: 1rem;
 		}
 	}
 </style>

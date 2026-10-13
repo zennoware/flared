@@ -16,8 +16,10 @@
 </script>
 
 <script lang="ts">
+	import ShownWorkspaceField from '../workspace/ShownWorkspaceField.svelte';
 	import { onMount } from 'svelte';
 	import type { Action } from 'svelte/action';
+	import Glyph from '../icons/Glyph.svelte';
 
 	interface Props {
 		// Form action URL. The app wrapper sends the fields to POST /v1/links.
@@ -31,6 +33,8 @@
 		enhance?: Action<HTMLFormElement>;
 		// Active domains for the picker. Without it, or with only one, links use shortHost.
 		domains?: LinkFormDomain[];
+		// The destination field, for a shortcut that focuses it.
+		destinationInput?: HTMLInputElement;
 	}
 
 	let {
@@ -41,10 +45,15 @@
 		error = null,
 		pending = false,
 		enhance = () => {},
-		domains = []
+		domains = [],
+		destinationInput = $bindable()
 	}: Props = $props();
 
 	const invalid = (field: string) => error?.field === field;
+	// The extra fields stay folded unless they hold a value or an error.
+	const customized = $derived(
+		Boolean(values.slug || values.title) || invalid('slug') || invalid('title')
+	);
 
 	// The last domain used in this browser. Only a preference: a stale ID is ignored.
 	const storageKey = 'flared:link-domain';
@@ -106,201 +115,350 @@
 	onreset={restoreAfterReset}
 	aria-labelledby="create-link-heading"
 >
-	<h2 id="create-link-heading">Create a short link</h2>
+	<h2 id="create-link-heading" class="visually-hidden">Create a short link</h2>
 	<input type="hidden" name="idempotencyKey" value={idempotencyKey} />
-	<div class="field">
-		<label for="link-destination">Destination URL</label>
-		<input
-			id="link-destination"
-			name="destination"
-			type="url"
-			inputmode="url"
-			autocomplete="off"
-			placeholder="https://example.com/launch"
-			maxlength="4096"
-			required
-			value={values.destination}
-			aria-invalid={invalid('destination') || undefined}
-			aria-describedby={invalid('destination') ? 'link-form-error' : undefined}
-		/>
-	</div>
-	{#if showPicker}
-		<div class="field domain">
-			<label for="link-domain">Domain</label>
-			<select
-				id="link-domain"
-				name="domainId"
-				bind:this={picker}
-				bind:value={selected}
-				aria-invalid={invalid('domainId') || undefined}
-				aria-describedby={invalid('domainId') ? 'link-form-error' : undefined}
-			>
-				{#each choices as choice (choice.value)}
-					<option value={choice.value}>{choice.hostname}</option>
-				{/each}
-			</select>
-		</div>
-	{/if}
-	<div class="row">
-		<div class="field">
-			<label for="link-slug">Slug <span class="optional">optional</span></label>
-			<div class="slug">
-				<span class="prefix" aria-hidden="true">{previewHost}/</span>
-				<input
-					id="link-slug"
-					name="slug"
-					type="text"
-					autocomplete="off"
-					autocapitalize="none"
-					spellcheck="false"
-					placeholder="random"
-					minlength="3"
-					maxlength="64"
-					pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?"
-					title="3 to 64 lowercase letters, digits, or hyphens"
-					value={values.slug}
-					aria-invalid={invalid('slug') || undefined}
-					aria-describedby={invalid('slug') ? 'link-form-error link-slug-hint' : 'link-slug-hint'}
-				/>
-			</div>
-			<p id="link-slug-hint" class="hint">
-				Leave empty for a random slug. A slug cannot change later.
-			</p>
-		</div>
-		<div class="field">
-			<label for="link-title">Title <span class="optional">optional</span></label>
+	<ShownWorkspaceField />
+	<div class="bar">
+		<div class="composer" class:invalid={invalid('destination') || invalid('domainId')}>
+			<Glyph name="link" size={22} />
+			<label for="link-destination" class="visually-hidden">Destination URL</label>
 			<input
-				id="link-title"
-				name="title"
-				type="text"
+				id="link-destination"
+				name="destination"
+				type="url"
+				inputmode="url"
 				autocomplete="off"
-				maxlength="200"
-				placeholder="Spring launch"
-				value={values.title}
-				aria-invalid={invalid('title') || undefined}
-				aria-describedby={invalid('title') ? 'link-form-error' : undefined}
+				placeholder="Paste a destination URL…"
+				maxlength="4096"
+				required
+				bind:this={destinationInput}
+				value={values.destination}
+				aria-invalid={invalid('destination') || undefined}
+				aria-describedby={invalid('destination') ? 'link-form-error' : undefined}
 			/>
+			{#if showPicker}
+				<span class="picker">
+					<label for="link-domain" class="visually-hidden">Domain</label>
+					<select
+						id="link-domain"
+						name="domainId"
+						bind:this={picker}
+						bind:value={selected}
+						aria-invalid={invalid('domainId') || undefined}
+						aria-describedby={invalid('domainId') ? 'link-form-error' : undefined}
+					>
+						{#each choices as choice (choice.value)}
+							<option value={choice.value}>{choice.hostname}</option>
+						{/each}
+					</select>
+					<Glyph name="caretDown" size={16} />
+				</span>
+			{:else}
+				<span class="host">{shortHost}</span>
+			{/if}
 		</div>
+		<button type="submit" class="create" disabled={pending}
+			>{pending ? 'Creating…' : 'Create link'}<Glyph name="arrowUpRight" size={20} /></button
+		>
 	</div>
 	{#if error}<p id="link-form-error" class="error" role="alert">{error.message}</p>{/if}
-	<button type="submit" disabled={pending}>{pending ? 'Creating…' : 'Create link'}</button>
+	<div class="below">
+		<span class="enter" aria-hidden="true"><Glyph name="returnKey" size={16} />to create</span>
+		<details open={customized}>
+			<summary><Glyph name="caretDown" size={18} />Customize</summary>
+			<div class="custom">
+				<div class="custom-field">
+					<label for="link-slug">Slug <span class="optional">optional</span></label>
+					<div class="slug">
+						<span class="prefix" aria-hidden="true">{previewHost}/</span>
+						<input
+							id="link-slug"
+							name="slug"
+							type="text"
+							autocomplete="off"
+							autocapitalize="none"
+							spellcheck="false"
+							placeholder="random"
+							minlength="3"
+							maxlength="64"
+							pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?"
+							title="3 to 64 lowercase letters, digits, or hyphens"
+							value={values.slug}
+							aria-invalid={invalid('slug') || undefined}
+							aria-describedby={invalid('slug')
+								? 'link-form-error link-slug-hint'
+								: 'link-slug-hint'}
+						/>
+					</div>
+					<p id="link-slug-hint" class="hint">
+						Leave empty for a random slug. A slug cannot change later.
+					</p>
+				</div>
+				<div class="custom-field">
+					<label for="link-title">Title <span class="optional">optional</span></label>
+					<input
+						id="link-title"
+						class="title-input"
+						name="title"
+						type="text"
+						autocomplete="off"
+						maxlength="200"
+						placeholder="Spring launch"
+						value={values.title}
+						aria-invalid={invalid('title') || undefined}
+						aria-describedby={invalid('title') ? 'link-form-error' : undefined}
+					/>
+				</div>
+			</div>
+		</details>
+	</div>
 </form>
 
 <style>
 	.link-form {
 		display: grid;
 		gap: 1rem;
-		max-width: 44rem;
-		padding: 1.25rem;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-paper, #fff);
 	}
-	h2 {
-		font-size: 1.05rem;
+	.bar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.85rem;
 	}
-	.row {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 1rem;
-	}
-	.field {
-		display: grid;
-		gap: 0.4rem;
+	.composer {
+		display: flex;
+		flex: 1 1 26rem;
+		align-items: center;
+		gap: 0.85rem;
 		min-width: 0;
-		align-content: start;
+		min-height: 3.75rem;
+		padding: 0 0.5rem 0 1.15rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-input);
+		color: var(--color-lead);
 	}
-	label {
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
-		font-weight: 650;
+	.composer:focus-within {
+		border-color: var(--color-strong);
+		box-shadow: 0 0 0 1px var(--color-strong);
+	}
+	.composer.invalid {
+		border-color: var(--color-danger);
+	}
+	#link-destination {
+		flex: 1;
+		min-width: 0;
+		align-self: stretch;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--color-strong);
+		font: inherit;
+		font-size: 1.0625rem;
+		outline: none;
+	}
+	#link-destination::placeholder {
+		color: var(--color-lead);
+	}
+	.picker,
+	.host {
+		position: relative;
+		display: flex;
+		flex: none;
+		align-items: center;
+		align-self: stretch;
+		margin: 0.6rem 0;
+		padding-left: 0.5rem;
+		border-left: 1px solid var(--color-rule);
+		color: var(--color-strong);
+	}
+	.host {
+		padding: 0 1rem 0 1.5rem;
+		font-size: 1.0625rem;
+	}
+	.picker select {
+		align-self: stretch;
+		max-width: 14rem;
+		padding: 0 2.5rem 0 1rem;
+		border: 0;
+		border-radius: var(--radius-sm, 0.375rem);
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: 1.0625rem;
+		appearance: none;
+		text-overflow: ellipsis;
+	}
+	.picker select:hover {
+		background: var(--color-hover);
+	}
+	.picker select option {
+		background: var(--color-paper);
+		color: var(--color-strong);
+	}
+	.picker :global(svg) {
+		position: absolute;
+		right: 0.85rem;
+		pointer-events: none;
+	}
+	.create {
+		display: inline-flex;
+		flex: none;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		min-height: 3.75rem;
+		padding: 0 1.75rem;
+		border: 0;
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-button-primary);
+		color: var(--color-on-primary);
+		font: inherit;
+		font-size: 1.125rem;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.create :global(svg) {
+		color: var(--color-accent);
+	}
+	.create:hover:not(:disabled) {
+		background: var(--color-button-primary-hover);
+	}
+	.create:disabled {
+		background: var(--color-disabled);
+		color: var(--color-muted);
+		cursor: progress;
+		opacity: 1;
+	}
+	.error {
+		color: var(--color-danger);
+		font-size: 0.9375rem;
+	}
+	summary {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 2.25rem;
+		padding: 0 0.5rem;
+		margin-left: -0.5rem;
+		border-radius: var(--radius-control, 0.5rem);
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+		list-style: none;
+		cursor: pointer;
+	}
+	summary:hover {
+		background: var(--color-hover);
+	}
+	summary::-webkit-details-marker {
+		display: none;
+	}
+	summary :global(svg) {
+		transition: transform var(--dur-fast, 140ms) var(--ease-out, ease);
+	}
+	details:not([open]) summary :global(svg) {
+		transform: rotate(-90deg);
+	}
+	.below {
+		position: relative;
+	}
+	.enter {
+		position: absolute;
+		top: 0.45rem;
+		right: 0;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
+		pointer-events: none;
+	}
+	.custom {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+		gap: 1.25rem 1.5rem;
+		padding: 0.75rem 0 0.5rem;
+	}
+	.custom-field {
+		display: grid;
+		align-content: start;
+		gap: 0.4rem;
+	}
+	.custom-field label {
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+		font-weight: 600;
 	}
 	.optional {
-		color: var(--color-muted, #667085);
-		font-weight: 500;
-	}
-	input,
-	select {
-		width: 100%;
-		min-width: 0;
-		min-height: 44px;
-		padding: 0.6rem 0.8rem;
-		color: var(--color-ink, #101828);
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
-	}
-	input:focus-visible,
-	select:focus-visible {
-		border-color: var(--color-muted, #667085);
-		outline: 1px solid var(--color-muted, #667085);
-		outline-offset: -1px;
-	}
-	.domain {
-		max-width: 20rem;
-	}
-	input[aria-invalid='true'],
-	select[aria-invalid='true'] {
-		border-color: var(--color-danger, #b42318);
+		color: var(--color-lead);
+		font-weight: 400;
 	}
 	.slug {
 		display: flex;
 		align-items: center;
-		min-width: 0;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
+		min-height: 2.75rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-control, 0.5rem);
+		background: var(--color-input);
+		overflow: hidden;
 	}
-	.slug:focus-within {
-		border-color: var(--color-muted, #667085);
-		outline: 1px solid var(--color-muted, #667085);
+	.slug:focus-within,
+	.title-input:focus {
+		border-color: var(--color-strong);
+		outline: 1px solid var(--color-strong);
 		outline-offset: -1px;
 	}
-	.slug input {
-		border: 0;
-		padding-left: 0;
-	}
-	.slug input:focus-visible {
-		outline: none;
-	}
 	.prefix {
-		padding-left: 0.8rem;
-		color: var(--color-muted, #667085);
+		align-self: stretch;
+		display: flex;
+		align-items: center;
+		padding: 0 0.75rem;
+		border-right: 1px solid var(--color-rule);
+		background: var(--color-selected);
+		color: var(--color-lead);
+		font-size: 0.9375rem;
 		white-space: nowrap;
 	}
+	.slug input,
+	.title-input {
+		min-width: 0;
+		min-height: 2.75rem;
+		padding: 0 0.85rem;
+		border: 0;
+		background: transparent;
+		color: var(--color-strong);
+		font: inherit;
+		font-size: 0.9375rem;
+		outline: none;
+	}
+	.slug input {
+		flex: 1;
+	}
+	.title-input {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-control, 0.5rem);
+		background: var(--color-input);
+	}
+	[aria-invalid='true'] {
+		color: var(--color-danger);
+	}
 	.hint {
-		color: var(--color-muted, #667085);
-		font-size: 0.8rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
-	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
-	}
-	button {
-		justify-self: start;
-		min-height: 44px;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--color-button-primary, #101828);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-weight: 620;
-	}
-	button:hover:not(:disabled) {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	button:disabled {
-		color: var(--color-muted, #667085);
-		background: var(--color-disabled, #eaecf0);
-		border-color: var(--color-disabled, #eaecf0);
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 	@media (max-width: 40rem) {
-		.row {
-			grid-template-columns: minmax(0, 1fr);
+		.create {
+			width: 100%;
 		}
-		button {
-			justify-self: stretch;
+		.enter {
+			display: none;
 		}
 	}
 </style>

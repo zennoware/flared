@@ -12,6 +12,19 @@
 		type TokenScope
 	} from '@flared/contracts/tokens';
 	import { createApiToken, revokeApiToken, tokenErrorMessage } from './client';
+	import { shownWorkspace } from '../workspace/shown';
+	import Glyph from '../icons/Glyph.svelte';
+	import Button from '../atoms/Button.svelte';
+	import Badge from '../atoms/Badge.svelte';
+	import Checkbox from '../atoms/Checkbox.svelte';
+	import Select from '../atoms/Select.svelte';
+	import TextInput from '../atoms/TextInput.svelte';
+	import SectionHeader from '../molecules/SectionHeader.svelte';
+	import SidePanel from '../molecules/SidePanel.svelte';
+	import SplitView from '../molecules/SplitView.svelte';
+	import Callout from '../molecules/Callout.svelte';
+	import CopyButton from '../molecules/CopyButton.svelte';
+	import FormField from '../molecules/FormField.svelte';
 
 	interface Props {
 		page: ApiTokenPage;
@@ -21,9 +34,21 @@
 		onChanged: () => void | Promise<void>;
 		// Called when creation needs a recent sign-in. The edition asks for its own proof.
 		onReauthRequired: () => void;
+		// The workspace the tokens act in, when the person can have several.
+		workspaceName?: string | null;
+		// The scopes the person's role allows; a member cannot give a token domains:write.
+		allowedScopes?: readonly TokenScope[];
 	}
 
-	let { page, apiBase, onChanged, onReauthRequired }: Props = $props();
+	let {
+		page,
+		apiBase,
+		onChanged,
+		onReauthRequired,
+		workspaceName = null,
+		allowedScopes = tokenScopes
+	}: Props = $props();
+	const workspace = shownWorkspace();
 
 	const scopeLabels: Record<TokenScope, string> = {
 		'links:read': 'Read links',
@@ -31,7 +56,7 @@
 		'analytics:read': 'Read analytics',
 		'domains:read': 'Read domains',
 		'domains:write': 'Add and remove domains',
-		'usage:read': 'Read usage'
+		'usage:read': 'Read usage and limits'
 	};
 	const expiryChoices: { days: TokenExpiryDays; label: string }[] = [
 		{ days: 30, label: '30 days' },
@@ -41,22 +66,68 @@
 	];
 
 	let name = $state('');
-	let scopes = $state<TokenScope[]>([...scopePresets.full]);
+	let scopes = $state<TokenScope[]>([...scopePresets.read]);
 	let expiry = $state(String(defaultTokenExpiryDays));
 	let pending = $state<string | null>(null);
 	let status = $state('');
 	let error = $state('');
 	let created = $state<CreatedApiToken | null>(null);
 	let confirmingId = $state<string | null>(null);
+	// The create form opens in a side panel from the section's button.
+	let creating = $state(false);
+	let nameInput = $state<HTMLInputElement>();
+	// Opening the panel moves the keyboard into the form.
+	$effect(() => {
+		if (creating) nameInput?.focus();
+	});
 
 	const dates = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+	const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+	// "2 hours ago" or "Yesterday" for recent use; the date after a week.
+	function lastUsed(at: string): string {
+		const seconds = (Date.parse(at) - Date.now()) / 1000;
+		const steps: [Intl.RelativeTimeFormatUnit, number][] = [
+			['minute', 60],
+			['hour', 3600],
+			['day', 86400]
+		];
+		if (seconds > -60) return 'Just now';
+		if (seconds < -7 * 86400) return dates.format(new Date(at));
+		const [unit, size] = [...steps].reverse().find(([, step]) => -seconds >= step) ?? steps[0];
+		const text = relative.format(Math.round(seconds / size), unit);
+		return text.charAt(0).toLocaleUpperCase() + text.slice(1);
+	}
+	// One sentence that names what the chosen scopes allow.
+	const summary = $derived.by(() => {
+		if (scopes.length === 0) return 'Choose at least one permission.';
+		if (same(scopes, scopePresets.full))
+			return 'This token can read and change everything in the workspace.';
+		if (same(scopes, allowedScopes)) return 'This token can do everything you can do here.';
+		const parts = scopes.map((scope) => scopeLabels[scope].toLocaleLowerCase());
+		const list =
+			parts.length > 1 ? `${parts.slice(0, -1).join(', ')}, and ${parts.at(-1)}` : parts[0];
+		return `This token can ${list}.`;
+	});
+	const activeCount = $derived(page.tokens.filter((token) => !expired(token)).length);
 	const fresh = () => page.freshUntil !== null && Date.parse(page.freshUntil) > Date.now();
 	const full = $derived(page.tokens.length >= maxTokensPerUser);
-	const sameScopes = (preset: readonly TokenScope[]) =>
-		preset.length === scopes.length && preset.every((scope) => scopes.includes(scope));
+	const same = (a: readonly TokenScope[], b: readonly TokenScope[]) =>
+		a.length === b.length && a.every((scope) => b.includes(scope));
+	const sameScopes = (preset: readonly TokenScope[]) => same(preset, scopes);
+	// A short name for a token's scopes; the full list is in the row's details.
+	const access = (granted: readonly TokenScope[]) =>
+		same(granted, scopePresets.full)
+			? 'Full access'
+			: same(granted, scopePresets.read)
+				? 'Read only'
+				: granted.length <= 2
+					? granted.map((scope) => scopeLabels[scope]).join(', ')
+					: `${granted.length} of ${tokenScopes.length} permissions`;
+	const expired = (token: { expiresAt: string | null }) =>
+		token.expiresAt !== null && Date.parse(token.expiresAt) <= Date.now();
 
 	function toggle(scope: TokenScope, checked: boolean) {
-		scopes = tokenScopes.filter((item) => (item === scope ? checked : scopes.includes(item)));
+		scopes = allowedScopes.filter((item) => (item === scope ? checked : scopes.includes(item)));
 	}
 
 	async function create() {
@@ -67,13 +138,17 @@
 		pending = 'create';
 		error = '';
 		status = '';
-		const result = await createApiToken(apiBase, {
-			name: name.trim(),
-			scopes,
-			expiresInDays:
-				expiryChoices.find((choice) => String(choice.days) === expiry)?.days ??
-				defaultTokenExpiryDays
-		});
+		const result = await createApiToken(
+			apiBase,
+			{
+				name: name.trim(),
+				scopes,
+				expiresInDays:
+					expiryChoices.find((choice) => String(choice.days) === expiry)?.days ??
+					defaultTokenExpiryDays
+			},
+			workspace()
+		);
 		pending = null;
 		if (!result.ok) {
 			if (result.code === 'REAUTH_REQUIRED') onReauthRequired();
@@ -82,24 +157,15 @@
 		}
 		created = result.value;
 		name = '';
+		creating = false;
 		await onChanged();
-	}
-
-	async function copy() {
-		if (!created) return;
-		try {
-			await navigator.clipboard.writeText(created.secret);
-			status = 'Token copied.';
-		} catch {
-			status = 'Select the token and copy it.';
-		}
 	}
 
 	async function revoke(id: string, label: string) {
 		pending = `revoke:${id}`;
 		error = '';
 		status = '';
-		const result = await revokeApiToken(apiBase, id);
+		const result = await revokeApiToken(apiBase, id, workspace());
 		pending = null;
 		confirmingId = null;
 		if (!result.ok && result.code !== 'NOT_FOUND') {
@@ -111,87 +177,9 @@
 	}
 </script>
 
-<section class="tokens" aria-labelledby="tokens-heading">
-	<h2 id="tokens-heading">API tokens</h2>
-	<p class="lead">
-		Use a token with the Flared CLI or the API. A token works only in this workspace and only for
-		the scopes you choose.
-	</p>
-	<p class="status" role="status" aria-live="polite">{status}</p>
-	{#if error}<p class="error" role="alert">{error}</p>{/if}
-
-	{#if created}
-		<div class="reveal" role="region" aria-labelledby="token-reveal-heading">
-			<h3 id="token-reveal-heading">Copy {created.token.name} now</h3>
-			<p>You will not see this token again. Store it in a password manager or secret store.</p>
-			<div class="secret">
-				<label class="visually-hidden" for="token-secret">New token</label>
-				<input
-					id="token-secret"
-					readonly
-					value={created.secret}
-					spellcheck="false"
-					onfocus={(event) => event.currentTarget.select()}
-				/>
-				<button type="button" onclick={() => void copy()}>Copy</button>
-			</div>
-			<button type="button" class="quiet" onclick={() => (created = null)}>Done</button>
-		</div>
-	{/if}
-
-	{#if page.tokens.length === 0}
-		<p class="empty">No tokens yet.</p>
-	{:else}
-		<ul>
-			{#each page.tokens as token (token.id)}
-				<li>
-					<div class="main">
-						<span class="name">{token.name}</span>
-						<code class="start">{token.start}…</code>
-						<span class="meta">{token.scopes.map((scope) => scopeLabels[scope]).join(', ')}</span>
-						<span class="meta">
-							Created <time datetime={token.createdAt}
-								>{dates.format(new Date(token.createdAt))}</time
-							>
-							·
-							{#if token.lastUsedAt}Last used <time datetime={token.lastUsedAt}
-									>{dates.format(new Date(token.lastUsedAt))}</time
-								>{:else}Never used{/if}
-							·
-							{#if token.expiresAt}Expires <time datetime={token.expiresAt}
-									>{dates.format(new Date(token.expiresAt))}</time
-								>{:else}No expiry{/if}
-						</span>
-					</div>
-					<div class="actions">
-						{#if confirmingId === token.id}
-							<span class="confirm">Revoke {token.name}?</span>
-							<button
-								type="button"
-								class="danger"
-								disabled={pending !== null}
-								onclick={() => void revoke(token.id, token.name)}>Revoke</button
-							>
-							<button type="button" class="quiet" onclick={() => (confirmingId = null)}>Keep</button
-							>
-						{:else}
-							<button
-								type="button"
-								class="quiet"
-								disabled={pending !== null}
-								aria-label={`Revoke ${token.name}`}
-								onclick={() => (confirmingId = token.id)}>Revoke</button
-							>
-						{/if}
-					</div>
-				</li>
-			{/each}
-		</ul>
-	{/if}
-
-	{#if full}
-		<p class="empty">You have {maxTokensPerUser} tokens. Revoke one before you create another.</p>
-	{:else}
+<!-- The create form opens beside the list; without it the list takes the full width. -->
+{#snippet createPanel()}
+	<SidePanel id="token-create-label" label="New API token" onclose={() => (creating = false)}>
 		<form
 			class="create"
 			onsubmit={(event) => {
@@ -200,97 +188,234 @@
 			}}
 		>
 			<h3>Create a token</h3>
-			<div class="field">
-				<label for="token-name">Name</label>
-				<input
+			<FormField for="token-name" label="Name">
+				<TextInput
 					id="token-name"
 					bind:value={name}
+					bind:input={nameInput}
 					maxlength={maxTokenNameLength}
-					placeholder="CI deploys"
+					placeholder="Release script"
 					autocomplete="off"
 					required
 				/>
-			</div>
+			</FormField>
 			<fieldset>
-				<legend>Scopes</legend>
+				<legend>Permissions</legend>
+				<p class="hint">Choose the smallest access needed.</p>
 				<div class="presets">
 					<button
 						type="button"
-						class="quiet"
-						aria-pressed={sameScopes(scopePresets.full)}
-						onclick={() => (scopes = [...scopePresets.full])}>Full access</button
-					>
-					<button
-						type="button"
-						class="quiet"
 						aria-pressed={sameScopes(scopePresets.read)}
 						onclick={() => (scopes = [...scopePresets.read])}>Read only</button
 					>
+					<button
+						type="button"
+						aria-pressed={sameScopes(allowedScopes)}
+						onclick={() => (scopes = [...allowedScopes])}>Full access</button
+					>
 				</div>
-				{#each tokenScopes as scope (scope)}
-					<label class="check">
-						<input
-							type="checkbox"
+				<div class="checks">
+					{#each allowedScopes as scope (scope)}
+						<Checkbox
 							checked={scopes.includes(scope)}
 							onchange={(event) => toggle(scope, event.currentTarget.checked)}
-						/>
-						{scopeLabels[scope]} <code>{scope}</code>
-					</label>
-				{/each}
+							>{scopeLabels[scope]}</Checkbox
+						>
+					{/each}
+				</div>
+				<p class="hint summary">{summary}</p>
 			</fieldset>
-			<div class="field">
-				<label for="token-expiry">Expires after</label>
-				<select id="token-expiry" bind:value={expiry}>
+			<FormField for="token-expiry" label="Expires after">
+				<Select id="token-expiry" bind:value={expiry}>
 					{#each expiryChoices as choice (choice.label)}
 						<option value={String(choice.days)}>{choice.label}</option>
 					{/each}
-				</select>
+				</Select>
+			</FormField>
+			<Callout tone="warning" icon="key">
+				<p>The token is shown once. Store it securely after creation.</p>
+			</Callout>
+			{#if error}<p class="error" role="alert">{error}</p>{/if}
+			<div class="buttons">
+				<Button
+					type="submit"
+					variant="primary"
+					size="lg"
+					wide
+					disabled={pending !== null || scopes.length === 0 || full}
+					>{pending === 'create' ? 'Creating…' : 'Create token'}</Button
+				>
+				<Button size="lg" wide onclick={() => (creating = false)}>Cancel</Button>
 			</div>
-			<button type="submit" disabled={pending !== null || scopes.length === 0}
-				>{pending === 'create' ? 'Creating…' : 'Create token'}</button
-			>
 		</form>
-	{/if}
+	</SidePanel>
+{/snippet}
+
+<section class="tokens" aria-labelledby="tokens-heading">
+	<SplitView panel={creating ? createPanel : undefined}>
+		<div class="list">
+			<SectionHeader
+				id="tokens-heading"
+				title="API tokens"
+				lead={workspaceName
+					? `Tokens act only in ${workspaceName}. Give scripts and services only the access they need.`
+					: 'Give scripts and services only the access they need.'}
+			>
+				{#snippet actions()}
+					{#if !creating}
+						<Button
+							variant="primary"
+							icon="plus"
+							disabled={full}
+							onclick={() => {
+								creating = true;
+								created = null;
+								error = '';
+							}}>Create token</Button
+						>
+					{/if}
+				{/snippet}
+			</SectionHeader>
+			<p class="count">
+				{activeCount}
+				{activeCount === 1 ? 'active token' : 'active tokens'}{#if full}. You have {maxTokensPerUser}
+					tokens; revoke one before you create another.{/if}
+			</p>
+			<p class="status" role="status" aria-live="polite">{status}</p>
+			{#if error && !creating}<p class="error" role="alert">{error}</p>{/if}
+
+			{#if created}
+				<div class="reveal" role="region" aria-labelledby="token-reveal-heading">
+					<h3 id="token-reveal-heading">Copy {created.token.name} now</h3>
+					<p>You will not see this token again. Store it in a password manager or secret store.</p>
+					<div class="secret">
+						<label class="visually-hidden" for="token-secret">New token</label>
+						<input
+							id="token-secret"
+							readonly
+							value={created.secret}
+							spellcheck="false"
+							onfocus={(event) => event.currentTarget.select()}
+						/>
+						<CopyButton text={created.secret} label="Copy token" kind="button" variant="primary" />
+					</div>
+					<Button variant="ghost" size="sm" onclick={() => (created = null)}>Done</Button>
+				</div>
+			{/if}
+
+			{#if page.tokens.length === 0}
+				<p class="empty">No tokens yet. Create one for the CLI, a script, or a service.</p>
+			{:else}
+				<div class="table" role="table" aria-labelledby="tokens-heading">
+					<div class="head" role="row">
+						<span role="columnheader">Name</span>
+						<span role="columnheader">Access</span>
+						<span role="columnheader">Last used</span>
+						<span role="columnheader" class="actions-head">Actions</span>
+					</div>
+					{#each page.tokens as token (token.id)}
+						<div class="row" role="row">
+							<div class="name-cell" role="cell">
+								<Glyph name="key" size={22} />
+								<span class="name-text">
+									<span class="name">{token.name}</span>
+									<span class="meta"
+										>Created {dates.format(new Date(token.createdAt))} ·
+										{#if token.expiresAt}{expired(token) ? 'Expired' : 'Expires'}
+											<time datetime={token.expiresAt}
+												>{dates.format(new Date(token.expiresAt))}</time
+											>{:else}No expiry{/if}
+									</span>
+									<code>{token.start}…</code>
+								</span>
+							</div>
+							<div role="cell" class="access">
+								<span title={token.scopes.map((scope) => scopeLabels[scope]).join(', ')}
+									>{access(token.scopes)}</span
+								>
+								{#if expired(token)}<Badge tone="warning">Expired</Badge>{/if}
+							</div>
+							<div role="cell" class="used">
+								{#if token.lastUsedAt}<time datetime={token.lastUsedAt}
+										>{lastUsed(token.lastUsedAt)}</time
+									>{:else}Never{/if}
+							</div>
+							<div role="cell" class="actions">
+								{#if confirmingId === token.id}
+									<span class="confirm">Revoke?</span>
+									<Button
+										size="sm"
+										variant="danger"
+										disabled={pending !== null}
+										onclick={() => void revoke(token.id, token.name)}>Revoke</Button
+									>
+									<Button size="sm" variant="ghost" onclick={() => (confirmingId = null)}
+										>Keep</Button
+									>
+								{:else}
+									<Button
+										size="sm"
+										variant="danger-soft"
+										disabled={pending !== null}
+										aria-label={`Revoke ${token.name}`}
+										onclick={() => (confirmingId = token.id)}>Revoke…</Button
+									>
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<p class="foot">
+				<Glyph name="lock" size={20} />Keep tokens private. Revoking a token stops applications that
+				use it.
+			</p>
+		</div>
+	</SplitView>
 </section>
 
 <style>
-	.tokens {
+	.list {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 44rem;
+		gap: 1rem;
+		min-width: 0;
 	}
-	h2 {
-		font-size: 1.05rem;
+	.count {
+		color: var(--color-strong);
+		font-size: 0.9875rem;
 	}
-	h3 {
-		font-size: 0.95rem;
-	}
-	.lead,
 	.status,
 	.empty,
-	.meta {
-		color: var(--color-muted, #667085);
-		font-size: 0.85rem;
+	.meta,
+	.hint {
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
 	.status:empty {
 		display: none;
 	}
 	.error {
-		color: var(--color-danger, #b42318);
-		font-size: 0.85rem;
+		color: var(--color-danger);
+		font-size: 0.875rem;
 	}
 	.reveal {
 		display: grid;
 		gap: 0.6rem;
-		padding: 1rem;
-		border: 1px solid var(--color-strong, #101828);
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-surface, #f9fafb);
+		padding: 1rem 1.25rem;
+		border: 1px solid color-mix(in oklch, var(--color-positive) 35%, transparent);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-positive-soft);
+	}
+	.reveal h3 {
+		color: var(--color-strong);
+		font-size: 1rem;
 	}
 	.reveal p {
-		font-size: 0.85rem;
+		color: var(--color-ink);
+		font-size: 0.9375rem;
 	}
-	.reveal > button {
+	.reveal > :global(button:last-child) {
 		justify-self: start;
 	}
 	.secret {
@@ -300,171 +425,178 @@
 	}
 	.secret input {
 		flex: 1 1 16rem;
-		font-family: var(--font-mono, ui-monospace, monospace);
-		font-size: 0.8rem;
+		min-width: 0;
+		min-height: 2.75rem;
+		padding: 0 0.9rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-control, 0.5rem);
+		background: var(--color-paper);
+		color: var(--color-strong);
+		font-family: var(--font-mono);
+		font-size: 0.875rem;
 	}
-	ul {
+	.table {
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-md, 0.625rem);
+		background: var(--color-paper);
+		overflow: hidden;
+		container-type: inline-size;
+	}
+	.head,
+	.row {
 		display: grid;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-md, 8px);
-		background: var(--color-paper, #fff);
-	}
-	li {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: space-between;
+		grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.1fr) minmax(0, 0.9fr) auto;
 		align-items: center;
-		gap: 0.75rem;
-		padding: 0.85rem 1rem;
+		gap: 1rem;
+		padding: 0.85rem 1.1rem;
 	}
-	li + li {
-		border-top: 1px solid var(--color-rule, #d0d5dd);
+	.head {
+		padding-block: 0.75rem;
+		border-bottom: 1px solid var(--color-rule);
+		background: var(--color-canvas);
+		color: var(--color-lead);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
-	.main {
+	.actions-head {
+		min-width: 6.5rem;
+	}
+	.row + .row {
+		border-top: 1px solid var(--color-rule);
+	}
+	.name-cell {
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		min-width: 0;
+		color: var(--color-ink);
+	}
+	.name-text {
 		display: grid;
-		gap: 0.15rem;
+		gap: 0.1rem;
 		min-width: 0;
 	}
 	.name {
-		color: var(--color-strong, #101828);
-		font-weight: 650;
-		overflow-wrap: anywhere;
+		overflow: hidden;
+		color: var(--color-strong);
+		font-weight: 600;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	code {
-		font-family: var(--font-mono, ui-monospace, monospace);
-		font-size: 0.8rem;
+		color: var(--color-lead);
+		font-size: 0.8125rem;
 	}
-	.start {
-		color: var(--color-ink, #101828);
+	.access,
+	.used {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--color-ink);
+		font-size: 0.9375rem;
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
+		justify-content: flex-start;
+		gap: 0.4rem;
+		min-width: 6.5rem;
 	}
 	.confirm {
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
+		color: var(--color-strong);
+		font-size: 0.9375rem;
+	}
+	.foot {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		color: var(--color-lead);
+		font-size: 0.875rem;
 	}
 	.create {
 		display: grid;
-		gap: 0.75rem;
-		max-width: 28rem;
-		margin-top: 0.5rem;
+		gap: 1.1rem;
 	}
-	.field {
-		display: grid;
-		gap: 0.4rem;
+	.create h3 {
+		color: var(--color-strong);
+		font-size: 1.75rem;
+		font-weight: 750;
+		letter-spacing: -0.035em;
+		line-height: 1.15;
 	}
 	fieldset {
 		display: grid;
-		gap: 0.4rem;
+		gap: 0.3rem;
 		margin: 0;
 		padding: 0;
 		border: 0;
 	}
-	legend,
-	.field > label {
-		margin-bottom: 0.2rem;
-		color: var(--color-strong, #101828);
-		font-size: 0.85rem;
+	legend {
+		padding: 0;
+		color: var(--color-strong);
+		font-size: 1.0625rem;
 		font-weight: 650;
 	}
 	.presets {
 		display: flex;
-		flex-wrap: wrap;
 		gap: 0.5rem;
-		margin-bottom: 0.25rem;
+		margin: 0.4rem 0 0.15rem;
 	}
-	.check {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		min-height: 32px;
-		color: var(--color-ink, #101828);
-		font-size: 0.85rem;
+	.presets button {
+		min-height: 2rem;
+		padding: 0 0.75rem;
+		border: 1px solid var(--color-rule);
+		border-radius: var(--radius-pill, 999px);
+		background: var(--color-paper);
+		color: var(--color-ink);
+		font: inherit;
+		font-size: 0.8125rem;
+		cursor: pointer;
 	}
-	.check code {
-		color: var(--color-muted, #667085);
-	}
-	.check input {
-		width: 1.1rem;
-		height: 1.1rem;
-		accent-color: var(--color-button-primary, #101828);
-	}
-	input:not([type='checkbox']),
-	select {
-		width: 100%;
-		min-width: 0;
-		min-height: 44px;
-		padding: 0.6rem 0.8rem;
-		color: var(--color-ink, #101828);
-		border: 1px solid var(--color-rule, #d0d5dd);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-paper, #fff);
-	}
-	input:focus-visible,
-	select:focus-visible {
-		border-color: var(--color-muted, #667085);
-		outline: 1px solid var(--color-muted, #667085);
-		outline-offset: -1px;
-	}
-	button {
-		min-height: 44px;
-		padding: 0.65rem 1.15rem;
-		border: 1px solid var(--color-button-primary, #101828);
-		border-radius: var(--radius-sm, 6px);
-		background: var(--color-button-primary, #101828);
-		color: var(--color-on-primary, #fff);
-		font-weight: 620;
-	}
-	button:hover:not(:disabled) {
-		background: var(--color-button-primary-hover, #344054);
-		border-color: var(--color-button-primary-hover, #344054);
-	}
-	.create > button {
-		justify-self: start;
-	}
-	button.quiet {
-		min-height: 40px;
-		padding: 0.4rem 0.8rem;
-		border-color: var(--color-rule, #d0d5dd);
-		background: var(--color-paper, #fff);
-		color: var(--color-ink, #101828);
-		font-size: 0.8rem;
+	.presets button[aria-pressed='true'] {
+		border-color: var(--color-accent);
+		background: var(--color-accent-soft);
+		color: var(--color-strong);
 		font-weight: 600;
 	}
-	button.quiet:hover:not(:disabled) {
-		border-color: var(--color-muted, #667085);
-		background: var(--color-paper, #fff);
+	.checks {
+		display: grid;
 	}
-	button.quiet[aria-pressed='true'] {
-		border-color: var(--color-strong, #101828);
-		box-shadow: inset 0 0 0 1px var(--color-strong, #101828);
+	.summary {
+		margin-top: 0.4rem;
 	}
-	button.danger,
-	button.danger:hover:not(:disabled) {
-		min-height: 40px;
-		padding: 0.4rem 0.8rem;
-		border-color: var(--color-button-danger, #b42318);
-		background: var(--color-button-danger, #b42318);
-		font-size: 0.8rem;
-	}
-	button:disabled {
-		color: var(--color-muted, #667085);
-		background: var(--color-disabled, #eaecf0);
-		border-color: var(--color-disabled, #eaecf0);
+	.buttons {
+		display: grid;
+		gap: 0.6rem;
 	}
 	.visually-hidden {
 		position: absolute;
 		width: 1px;
 		height: 1px;
 		overflow: hidden;
-		clip: rect(0 0 0 0);
+		clip-path: inset(50%);
 		white-space: nowrap;
+	}
+	/* Narrow tables stack each token: name, then access and use, then the action. */
+	@container (max-width: 36rem) {
+		.head {
+			display: none;
+		}
+		.row {
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 0.4rem 1rem;
+		}
+		.name-cell {
+			grid-column: 1 / -1;
+		}
+		.actions {
+			grid-column: 2;
+			grid-row: 2 / 4;
+			justify-content: flex-end;
+		}
 	}
 </style>
